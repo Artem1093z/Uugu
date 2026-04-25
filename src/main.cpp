@@ -769,14 +769,4 @@ private:
 };
 
 // Правильная регистрация Zygisk модуля (Без использования сломанного макроса)
-extern "C" {
-    __attribute__((visibility("default"), used))
-    void zygisk_module_entry(zygisk::ApiTable *table, JNIEnv *env) {
-        zygisk::internal::module_entry<ManesModule>(table, env);
-    }
-    
-    __attribute__((visibility("default"), used))
-    void zygisk_companion_entry(zygisk::ApiTable *table, long origin_pid) {
-        zygisk::internal::companion_entry<ManesModule>(table, origin_pid);
-    }
-}
+REGISTER_ZYGISK_MODULE(ManesModule)
