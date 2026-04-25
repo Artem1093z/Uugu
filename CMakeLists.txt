@@ -4,18 +4,20 @@ project(ManesCheatZygisk)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--no-undefined -Wl,--gc-sections")
 
-# Ищем основной код (main.cpp) и базовые файлы ImGui, НЕ заходя в папку backends
-file(GLOB SRC_FILES 
-    "src/*.cpp" 
-    "src/imgui/*.cpp"
+# ЯВНО УКАЗЫВАЕМ ТОЛЬКО НУЖНЫЕ ФАЙЛЫ
+# Игнорируем imgui_demo.cpp и imgui_freetype.cpp!
+set(SRC_FILES 
+    "src/main.cpp"
+    "src/imgui/imgui.cpp"
+    "src/imgui/imgui_draw.cpp"
+    "src/imgui/imgui_tables.cpp"
+    "src/imgui/imgui_widgets.cpp"
+    "src/imgui/backends/imgui_impl_opengl3.cpp"
 )
-
-# Точечно добавляем ТОЛЬКО бэкенд OpenGL 3, который нужен для Android
-list(APPEND SRC_FILES "src/imgui/backends/imgui_impl_opengl3.cpp")
 
 include_directories(src src/imgui)
 
-# Собираем как разделяемую библиотеку (Zygisk требует .so)
+# Собираем как разделяемую библиотеку (.so)
 add_library(manes_zygisk SHARED ${SRC_FILES})
 
 # Подключаем Android библиотеки (EGL, GLES3, log)
