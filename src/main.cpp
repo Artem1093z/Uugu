@@ -34,10 +34,10 @@ pid_t g_Pid = 0;
 int g_ScreenW = 0, g_ScreenH = 0;
 uintptr_t g_Il2CppBase_RXP = 0;
 void* g_StringClass = nullptr; 
-void* g_LocalPlayerManager = nullptr; // <--- ТРЕКЕР ЛОКАЛЬНОГО ИГРОКА ДЛЯ МОДОВ ОРУЖИЯ
+void* g_LocalPlayerManager = nullptr; 
 
 // ======================== ОФФСЕТЫ ========================
-#define RVA_RAYCAST_PTR oxorany((uintptr_t)0xAADB050) // <--- ПОИНТЕР ДЛЯ MAGIC BULLET
+#define RVA_RAYCAST_PTR oxorany((uintptr_t)0xAADB050)
 #define RVA_GET_CAM_COUNT oxorany((uintptr_t)0x9772DC4)
 #define RVA_GET_MAIN_CAM oxorany((uintptr_t)0x9771B94)
 #define RVA_FIND_OF_TYPE oxorany((uintptr_t)0x97FC0EC)
@@ -118,21 +118,8 @@ typedef bool(*physics_linecast_t)(Vec3 start, Vec3 end, int layerMask, void* met
 typedef void(*set_fps_t)(int);
 
 // ======================== MAGIC BULLET (POINTER SWAP) ========================
-
-using Ray = struct {
-    Vec3 m_orig;
-    Vec3 m_dir;
-};
-
-using RaycastHit = struct {
-    Vec3 m_point;
-    Vec3 m_normal;
-    uint32_t m_face;
-    float m_distance;
-    float m_uv[2];
-    int m_collider;
-};
-
+using Ray = struct { Vec3 m_orig; Vec3 m_dir; };
+using RaycastHit = struct { Vec3 m_point; Vec3 m_normal; uint32_t m_face; float m_distance; float m_uv[2]; int m_collider; };
 using InternalRaycastFn = bool(*)(void* scene, Ray* ray, float distance, RaycastHit* hit, int layer, int query);
 
 std::atomic<int> g_RaycastCallCount(0);
@@ -141,29 +128,21 @@ uintptr_t g_HookedRaycastPtr = 0;
 
 bool g_MB_HasTarget = false;
 Vec3 g_MB_TargetPos = {0,0,0};
-extern void* g_PInputObj; // Глобальный поинтер на инпуты
+extern void* g_PInputObj; 
 
 bool hk_Raycast(void* scene, Ray* ray, float distance, RaycastHit* hit, int layer, int query) {
     g_RaycastCallCount++;
-    
     extern bool cfg_magic_bullet;
     if (cfg_magic_bullet && g_MB_HasTarget && distance > 50.0f) {
-        
         bool isShooting = false;
-        if (g_PInputObj) {
-            FastRead((void*)((uintptr_t)g_PInputObj + OFF_SIGMA), &isShooting);
-        }
-        
+        if (g_PInputObj) FastRead((void*)((uintptr_t)g_PInputObj + OFF_SIGMA), &isShooting);
         if (isShooting) {
             Vec3 target = g_MB_TargetPos;
             Vec3 dir = target - ray->m_orig;
             float dist = sqrtf(dir.x*dir.x + dir.y*dir.y + dir.z*dir.z);
-            if (dist > 0.001f) {
-                ray->m_dir = {dir.x / dist, dir.y / dist, dir.z / dist};
-            }
+            if (dist > 0.001f) ray->m_dir = {dir.x / dist, dir.y / dist, dir.z / dist};
         }
     }
-    
     InternalRaycastFn orig = (InternalRaycastFn)g_OrigRaycastPtr;
     return orig(scene, ray, distance, hit, layer, query);
 }
@@ -180,17 +159,9 @@ bool g_IsMenuMinimized = false; ImVec2 g_MinimizedPos = ImVec2(100, 100); float 
 bool cfg_esp_enable=true, cfg_esp_line=true, cfg_esp_box=true, cfg_esp_name=true, cfg_esp_clan=true, cfg_esp_dist=true, cfg_esp_count=true;
 bool cfg_loot_enable=false, cfg_pickup_enable=false, cfg_ore_enable=false, cfg_scrap_enable=false, cfg_tree_enable=false, cfg_cupboard_enable=false, cfg_sleeper_enable=false;
 bool cfg_aim_enable=true, cfg_aim_vis_check=true, cfg_aim_draw_fov=true, cfg_aim_scope_only=true;
-float cfg_aim_fov=120.0f, cfg_aim_max_dist=250.0f; 
-float cfg_aim_smooth = 1.5f; 
-int cfg_aim_bone=0, cfg_line_pos=0;
-
-// MAGIC BULLET НАСТРОЙКИ
+float cfg_aim_fov=120.0f, cfg_aim_max_dist=250.0f; float cfg_aim_smooth = 1.5f; int cfg_aim_bone=0, cfg_line_pos=0;
 bool cfg_magic_bullet=false, cfg_mb_draw_fov=true, cfg_mb_draw_line=true; float cfg_mb_fov=150.0f; 
-
-// WEAPON MODS НАСТРОЙКИ
-bool cfg_fast_heal=false;
-bool cfg_no_recoil=false, cfg_fast_reload=false, cfg_fast_shoot=false;
-
+bool cfg_fast_heal=false; bool cfg_no_recoil=false, cfg_fast_reload=false, cfg_fast_shoot=false;
 bool cfg_unlock_fps=false, cfg_xray_enable=false; float cfg_xray_dist=2.0f;
 bool cfg_auto_farm=false, cfg_farm_stone=true, cfg_farm_ferum=true, cfg_farm_sulfur=true, cfg_farm_scrap=true, cfg_farm_tree=true; 
 bool farm_sprint=false, farm_attack=false, farm_crouch=false; 
@@ -207,77 +178,26 @@ Mat4x4 g_vM; Vec3 g_cP;
 
 void UpdCam(); void UpdPl(); void UpdLoot(); void UpdPickup(); void UpdInput(); void UpdOre(); void UpdScrap(); void UpdTree(); void UpdCupboard(); void UpdSleeper(); void InitCache();
 
-
-// ======================== IMGUI УТИЛИТЫ ========================
+// ======================== IMGUI УТИЛИТЫ И МЕНЮ ========================
 void DrwTxt(ImDrawList* d, const char* t, float x, float y, ImU32 c, float s) { ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(s, FLT_MAX, 0.0f, t); float px = x - ts.x / 2.0f; d->AddText(ImGui::GetFont(), s, ImVec2(px + 1, y + 1), IM_COL32(0,0,0,255), t); d->AddText(ImGui::GetFont(), s, ImVec2(px, y), c, t); }
 bool DPanel(const char* l, const char* d, bool* v) { ImGuiWindow* w=ImGui::GetCurrentWindow(); if(w->SkipItems)return false; ImGuiContext& g=*GImGui; ImGuiID id=w->GetID(l); ImVec2 p=w->DC.CursorPos; ImVec2 s(ImGui::GetContentRegionAvail().x,65.0f*g_MenuScale); ImRect b(p,ImVec2(p.x+s.x,p.y+s.y)); ImGui::ItemSize(b,g.Style.FramePadding.y); if(!ImGui::ItemAdd(b,id))return false; bool hv,hl; bool pr=ImGui::ButtonBehavior(b,id,&hv,&hl); if(g_IsScrolling)pr=false; if(pr)*v=!*v; float da=ImClamp(g.IO.DeltaTime*14.0f,0.0f,1.0f); float dh=ImClamp(g.IO.DeltaTime*12.0f,0.0f,1.0f); float* av=w->StateStorage.GetFloatRef(id,0.0f); *av=ImLerp(*av,*v?1.0f:0.0f,da); float* hvv=w->StateStorage.GetFloatRef(id+1,0.0f); *hvv=ImLerp(*hvv,(hv&&!g_IsScrolling)?1.0f:0.0f,dh); ImU32 bg=ImGui::ColorConvertFloat4ToU32(ImLerp(ImVec4(0.12f,0.12f,0.12f,1.0f),ImVec4(0.17f,0.17f,0.17f,1.0f),*hvv)); w->DrawList->AddRectFilled(b.Min,b.Max,bg,10.0f*g_MenuScale); w->DrawList->AddText(ImGui::GetFont(),24.0f*g_MenuScale,ImVec2(b.Min.x+15*g_MenuScale,b.Min.y+12*g_MenuScale),IM_COL32(240,240,240,255),l); if(d)w->DrawList->AddText(ImGui::GetFont(),18.0f*g_MenuScale,ImVec2(b.Min.x+15*g_MenuScale,b.Min.y+38*g_MenuScale),IM_COL32(140,140,140,255),d); float sw=44.0f*g_MenuScale, sh=24.0f*g_MenuScale; ImVec2 sp(b.Max.x-sw-15*g_MenuScale,b.Min.y+(s.y-sh)/2.0f); ImU32 sbg=ImGui::ColorConvertFloat4ToU32(ImLerp(ImVec4(0.3f,0.3f,0.3f,1.0f),ImVec4(1.0f,1.0f,1.0f,1.0f),*av)); w->DrawList->AddRectFilled(sp,ImVec2(sp.x+sw,sp.y+sh),sbg,sh/2.0f); ImU32 cc=ImGui::ColorConvertFloat4ToU32(ImLerp(ImVec4(0.9f,0.9f,0.9f,1.0f),ImVec4(0.1f,0.1f,0.1f,1.0f),*av)); float cx=ImLerp(sp.x+sh/2.0f,sp.x+sw-sh/2.0f,*av); w->DrawList->AddCircleFilled(ImVec2(cx,sp.y+sh/2.0f),sh/2.0f-3.0f*g_MenuScale,cc); return pr; }
 bool DSlider(const char* l, const char* d, float* v, float mn, float mx, const char* f) { ImGuiWindow* w=ImGui::GetCurrentWindow(); if(w->SkipItems)return false; ImGuiContext& g=*GImGui; ImGuiID id=w->GetID(l); ImVec2 p=w->DC.CursorPos; ImVec2 s(ImGui::GetContentRegionAvail().x,65.0f*g_MenuScale); ImRect b(p,ImVec2(p.x+s.x,p.y+s.y)); ImGui::ItemSize(b,g.Style.FramePadding.y); if(!ImGui::ItemAdd(b,id))return false; bool hv,hl; ImGui::ButtonBehavior(b,id,&hv,&hl); if(hl&&!g_IsScrolling){ float t=ImClamp((g.IO.MousePos.x-b.Min.x)/s.x,0.0f,1.0f); *v=mn+t*(mx-mn); } float t=(*v-mn)/(mx-mn); float dh=ImClamp(g.IO.DeltaTime*12.0f,0.0f,1.0f); float* hvv=w->StateStorage.GetFloatRef(id+1,0.0f); *hvv=ImLerp(*hvv,(hv&&!g_IsScrolling)?1.0f:0.0f,dh); ImU32 bg=ImGui::ColorConvertFloat4ToU32(ImLerp(ImVec4(0.12f,0.12f,0.12f,1.0f),ImVec4(0.17f,0.17f,0.17f,1.0f),*hvv)); w->DrawList->AddRectFilled(b.Min,b.Max,bg,10.0f*g_MenuScale); ImU32 fc=IM_COL32(70,70,70,255); ImVec2 fm(b.Min.x+s.x*t,b.Max.y); w->DrawList->AddRectFilled(b.Min,fm,fc,10.0f*g_MenuScale,t<0.99f?ImDrawFlags_RoundCornersLeft:ImDrawFlags_RoundCornersAll); w->DrawList->AddText(ImGui::GetFont(),24.0f*g_MenuScale,ImVec2(b.Min.x+15*g_MenuScale,b.Min.y+12*g_MenuScale),IM_COL32(240,240,240,255),l); if(d)w->DrawList->AddText(ImGui::GetFont(),18.0f*g_MenuScale,ImVec2(b.Min.x+15*g_MenuScale,b.Min.y+38*g_MenuScale),IM_COL32(180,180,180,255),d); char vb[64]; snprintf(vb,sizeof(vb),f,*v); ImVec2 vsz=ImGui::GetFont()->CalcTextSizeA(20.0f*g_MenuScale,FLT_MAX,0.0f,vb); w->DrawList->AddText(ImGui::GetFont(),20.0f*g_MenuScale,ImVec2(b.Max.x-vsz.x-15*g_MenuScale,b.Min.y+22*g_MenuScale),IM_COL32(255,255,255,255),vb); return hl&&!g_IsScrolling; }
 
 void LoadLogoTexture() { if (g_LogoTex != 0) return; int c; unsigned char* d = stbi_load_from_memory(logo_data, logo_len, &g_LogoW, &g_LogoH, &c, 4); if (d) { glGenTextures(1, &g_LogoTex); glBindTexture(GL_TEXTURE_2D, g_LogoTex); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR); glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, g_LogoW, g_LogoH, 0, GL_RGBA, GL_UNSIGNED_BYTE, d); stbi_image_free(d); } }
 
-// ======================== АВТОРИЗАЦИЯ И ЛОГИКА ========================
 void PerformAuth(std::string key) {
-    JNIEnv* env;
-    int getEnvStat = g_JVM->GetEnv((void**)&env, JNI_VERSION_1_6);
-    bool didAttach = false;
-    if (getEnvStat == JNI_EDETACHED) {
-        if (g_JVM->AttachCurrentThread(&env, NULL) != 0) { g_AuthStatusMsg = oxorany("JNI Attach failed!"); return; }
-        didAttach = true;
-    }
-    std::string hwid = JNI_GetHWID(env);
-    std::string url = std::string(oxorany("https://volgavpn.qzz.io/?key=")) + key + std::string(oxorany("&hwid=")) + hwid;
-    std::string resp = JNI_HttpGet(env, url);
-    if (didAttach) g_JVM->DetachCurrentThread();
-
-    if (resp.empty()) { g_AuthStatusMsg = oxorany("Connection error!"); return; }
-    std::string status = ExtractJSONValue(resp, oxorany("status"));
-    if (status == oxorany("success")) {
-        std::string sig = ExtractJSONValue(resp, oxorany("signature"));
-        std::string days = ExtractJSONValue(resp, oxorany("days_left"));
-        std::string expected_sig = Crypto::hmac_sha256(oxorany("TetoIsTheBestBeaverInTheWorld"), key);
-        if (sig == expected_sig) {
-            g_AuthDaysLeft = days;
-            g_Authenticated = true;
-            g_AuthValidationHash = 0x41BA0EA2; 
-            g_AuthStatusMsg = "";
-        } else { g_AuthStatusMsg = oxorany("Security validation failed!"); }
-    } else {
-        std::string msg = ExtractJSONValue(resp, oxorany("message"));
-        g_AuthStatusMsg = msg.empty() ? oxorany("Unknown error") : msg;
-    }
+    JNIEnv* env; int getEnvStat = g_JVM->GetEnv((void**)&env, JNI_VERSION_1_6); bool didAttach = false;
+    if (getEnvStat == JNI_EDETACHED) { if (g_JVM->AttachCurrentThread(&env, NULL) != 0) { g_AuthStatusMsg = oxorany("JNI Attach failed!"); return; } didAttach = true; }
+    std::string hwid = JNI_GetHWID(env); std::string url = std::string(oxorany("https://volgavpn.qzz.io/?key=")) + key + std::string(oxorany("&hwid=")) + hwid; std::string resp = JNI_HttpGet(env, url); if (didAttach) g_JVM->DetachCurrentThread();
+    if (resp.empty()) { g_AuthStatusMsg = oxorany("Connection error!"); return; } std::string status = ExtractJSONValue(resp, oxorany("status"));
+    if (status == oxorany("success")) { std::string sig = ExtractJSONValue(resp, oxorany("signature")); std::string days = ExtractJSONValue(resp, oxorany("days_left")); std::string expected_sig = Crypto::hmac_sha256(oxorany("TetoIsTheBestBeaverInTheWorld"), key); if (sig == expected_sig) { g_AuthDaysLeft = days; g_Authenticated = true; g_AuthValidationHash = 0x41BA0EA2; g_AuthStatusMsg = ""; } else { g_AuthStatusMsg = oxorany("Security validation failed!"); } } else { std::string msg = ExtractJSONValue(resp, oxorany("message")); g_AuthStatusMsg = msg.empty() ? oxorany("Unknown error") : msg; }
 }
 
 void DrawAuthMenu() {
-    ImGui::SetNextWindowSize(ImVec2(400 * g_MenuScale, 220 * g_MenuScale), ImGuiCond_Always);
-    ImGui::SetNextWindowPos(ImVec2(g_ScreenW / 2.0f, g_ScreenH / 2.0f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.08f, 0.08f, 0.08f, 1.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 12.0f * g_MenuScale);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-    ImGui::Begin("Auth", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings);
-    ImDrawList* d = ImGui::GetWindowDrawList(); ImVec2 p = ImGui::GetWindowPos();
-    d->AddRectFilled(p, ImVec2(p.x + 400 * g_MenuScale, p.y + 60 * g_MenuScale), IM_COL32(25, 25, 25, 255), 12.0f * g_MenuScale, ImDrawFlags_RoundCornersTop);
-    if (g_LogoTex) { d->AddImage((void*)(intptr_t)g_LogoTex, ImVec2(p.x + 15 * g_MenuScale, p.y + 10 * g_MenuScale), ImVec2(p.x + 55 * g_MenuScale, p.y + 50 * g_MenuScale)); }
-    d->AddText(ImGui::GetFont(), 28.0f * g_MenuScale, ImVec2(p.x + 70 * g_MenuScale, p.y + 16 * g_MenuScale), IM_COL32(240, 240, 240, 255), "Authorization");
-    ImGui::SetCursorPos(ImVec2(40 * g_MenuScale, 90 * g_MenuScale));
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12f, 0.12f, 0.12f, 1.0f)); ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.17f, 0.17f, 0.17f, 1.0f)); ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.1f, 0.1f, 0.1f, 1.0f));
-    if (ImGui::Button("Paste & Login", ImVec2(320 * g_MenuScale, 60 * g_MenuScale))) {
-        std::string clip = JNI_GetClipboard();
-        if (!clip.empty()) {
-            strncpy(g_AuthKey, clip.c_str(), sizeof(g_AuthKey) - 1);
-            g_AuthKey[sizeof(g_AuthKey) - 1] = '\0';
-            g_AuthStatusMsg = "Wait!";
-            std::string k(g_AuthKey); std::thread([k]() { PerformAuth(k); }).detach();
-        } else { g_AuthStatusMsg = "Clipboard is empty!"; }
-    }
-    ImGui::PopStyleColor(3);
-    if (!g_AuthStatusMsg.empty()) {
-        float msgW = ImGui::GetFont()->CalcTextSizeA(22.0f * g_MenuScale, FLT_MAX, 0.0f, g_AuthStatusMsg.c_str()).x;
-        ImGui::SetCursorPos(ImVec2((400 * g_MenuScale - msgW) / 2.0f, 175 * g_MenuScale));
-        ImU32 col = (g_AuthStatusMsg.find("Connecting") != std::string::npos) ? IM_COL32(180, 180, 180, 255) : IM_COL32(255, 100, 100, 255);
-        d->AddText(ImGui::GetFont(), 22.0f * g_MenuScale, ImGui::GetCursorScreenPos(), col, g_AuthStatusMsg.c_str());
-    }
-    ImGui::End(); ImGui::PopStyleVar(3); ImGui::PopStyleColor();
+    ImGui::SetNextWindowSize(ImVec2(400 * g_MenuScale, 220 * g_MenuScale), ImGuiCond_Always); ImGui::SetNextWindowPos(ImVec2(g_ScreenW / 2.0f, g_ScreenH / 2.0f), ImGuiCond_Always, ImVec2(0.5f, 0.5f)); ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.08f, 0.08f, 0.08f, 1.0f)); ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 12.0f * g_MenuScale); ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0)); ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f); ImGui::Begin("Auth", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings); ImDrawList* d = ImGui::GetWindowDrawList(); ImVec2 p = ImGui::GetWindowPos(); d->AddRectFilled(p, ImVec2(p.x + 400 * g_MenuScale, p.y + 60 * g_MenuScale), IM_COL32(25, 25, 25, 255), 12.0f * g_MenuScale, ImDrawFlags_RoundCornersTop);
+    if (g_LogoTex) { d->AddImage((void*)(intptr_t)g_LogoTex, ImVec2(p.x + 15 * g_MenuScale, p.y + 10 * g_MenuScale), ImVec2(p.x + 55 * g_MenuScale, p.y + 50 * g_MenuScale)); } d->AddText(ImGui::GetFont(), 28.0f * g_MenuScale, ImVec2(p.x + 70 * g_MenuScale, p.y + 16 * g_MenuScale), IM_COL32(240, 240, 240, 255), "Authorization"); ImGui::SetCursorPos(ImVec2(40 * g_MenuScale, 90 * g_MenuScale)); ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12f, 0.12f, 0.12f, 1.0f)); ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.17f, 0.17f, 0.17f, 1.0f)); ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.1f, 0.1f, 0.1f, 1.0f));
+    if (ImGui::Button("Paste & Login", ImVec2(320 * g_MenuScale, 60 * g_MenuScale))) { std::string clip = JNI_GetClipboard(); if (!clip.empty()) { strncpy(g_AuthKey, clip.c_str(), sizeof(g_AuthKey) - 1); g_AuthKey[sizeof(g_AuthKey) - 1] = '\0'; g_AuthStatusMsg = "Wait!"; std::string k(g_AuthKey); std::thread([k]() { PerformAuth(k); }).detach(); } else { g_AuthStatusMsg = "Clipboard is empty!"; } } ImGui::PopStyleColor(3);
+    if (!g_AuthStatusMsg.empty()) { float msgW = ImGui::GetFont()->CalcTextSizeA(22.0f * g_MenuScale, FLT_MAX, 0.0f, g_AuthStatusMsg.c_str()).x; ImGui::SetCursorPos(ImVec2((400 * g_MenuScale - msgW) / 2.0f, 175 * g_MenuScale)); ImU32 col = (g_AuthStatusMsg.find("Connecting") != std::string::npos) ? IM_COL32(180, 180, 180, 255) : IM_COL32(255, 100, 100, 255); d->AddText(ImGui::GetFont(), 22.0f * g_MenuScale, ImGui::GetCursorScreenPos(), col, g_AuthStatusMsg.c_str()); } ImGui::End(); ImGui::PopStyleVar(3); ImGui::PopStyleColor();
 }
 
 void DrawMenu() {
@@ -380,33 +300,25 @@ void DrawESP() {
     if (cfg_esp_count && g_VisibleEnemies > 0) { char cB[16]; snprintf(cB, 16, "%d", g_VisibleEnemies); DrwTxt(ImGui::GetForegroundDrawList(), cB, sW / 2, 80, IM_COL32(255, 255, 255, 255), 60.0f); }
 }
 
-// ======================== ОБНОВЛЕНИЕ КЭШЕЙ (БЕЗ EXPORTS) ========================
-
-bool InitStringClass() {
-    if (g_StringClass) return true;
-    auto gmc = (g_mc_t)(g_Il2CppBase_RXP + RVA_GET_MAIN_CAM);
-    auto gn = (g_name_t)(g_Il2CppBase_RXP + RVA_GET_NAME);
-    if (!IsMemValid((void*)gmc) || !IsMemValid((void*)gn)) return false;
-    
-    void* cam = gmc(nullptr);
-    if (!IsValidObj(cam)) return false;
-    
-    void* camName = gn(cam, nullptr);
-    if (!IsValidObj(camName)) return false;
-    
-    void* klass = nullptr;
-    if (FastRead(camName, &klass) && IsValidPtr(klass)) {
-        g_StringClass = klass;
-        return true;
-    }
-    return false;
-}
-
 void InitCache() {
     static bool i_d = false; if (i_d) return; 
     static uint64_t l_t = 0; if (g_FCnt - l_t < 120) return; l_t = g_FCnt; 
     
-    if (!InitStringClass()) return; 
+    if (!g_StringClass) {
+        auto gmc = (g_mc_t)(g_Il2CppBase_RXP + RVA_GET_MAIN_CAM);
+        auto gn = (g_name_t)(g_Il2CppBase_RXP + RVA_GET_NAME);
+        if (IsMemValid((void*)gmc) && IsMemValid((void*)gn)) {
+            void* cam = gmc(nullptr);
+            if (IsValidObj(cam)) {
+                void* camName = gn(cam, nullptr);
+                if (IsValidObj(camName)) {
+                    void* klass = nullptr;
+                    if (FastRead(camName, &klass) && IsValidPtr(klass)) g_StringClass = klass;
+                }
+            }
+        }
+    }
+    if (!g_StringClass) return; 
 
     auto gt = (g_type_t)(g_Il2CppBase_RXP + RVA_GET_TYPE); if (!IsValidPtr((void*)gt)) return;
     
@@ -489,7 +401,7 @@ void MainThreadUpdate() {
                                 }
                                 
                                 if (cfg_fast_reload) {
-                                    float val = 0.05f;
+                                    float val = 0.01f;
                                     SafeWrite((void*)((uintptr_t)weaponConfig + oxorany((uintptr_t)0x48)), &val, 4); 
                                     SafeWrite((void*)((uintptr_t)weaponConfig + oxorany((uintptr_t)0x4C)), &val, 4); 
                                 }
@@ -522,7 +434,6 @@ void MainThreadUpdate() {
                                     SafeWrite((void*)((uintptr_t)hitscanAnimator + oxorany((uintptr_t)0x60)), &speedVal, 4);
                                 }
                                 if (cfg_fast_reload) {
-                                    // Отключаем ожидание анимации перезарядки, чтобы избежать десинхронизации (заклинивания оружия)
                                     bool hasAnim = false;
                                     SafeWrite((void*)((uintptr_t)hitscanAnimator + oxorany((uintptr_t)0x80)), &hasAnim, 1);
                                 }
@@ -791,22 +702,6 @@ void r_thread() {
     }
 }
 
-// =========================================================================
-// 🔥 SAFE ANTI-CHEAT BYPASS (Стирание ELF без Dobby) 🔥
-// =========================================================================
-void AntiCheatBypass() {
-    Dl_info info;
-    if (dladdr((void*)AntiCheatBypass, &info)) {
-        uintptr_t base = (uintptr_t)info.dli_fbase;
-        size_t page_size = sysconf(_SC_PAGESIZE);
-        
-        if (mprotect((void*)base, page_size, PROT_READ | PROT_WRITE) == 0) {
-            *(uint32_t*)base = 0x00000000; 
-            mprotect((void*)base, page_size, PROT_READ | PROT_EXEC);
-        }
-    }
-}
-
 void m_thread() { 
     g_Pid = getpid(); 
     while(!g_Il2CppBase_RXP) { 
@@ -820,9 +715,57 @@ void m_thread() {
     std::thread(FreezeThread).detach(); 
 }
 
-extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
-    g_JVM = vm; 
-    AntiCheatBypass();
-    std::thread(m_thread).detach();
-    return JNI_VERSION_1_6;
-}
+// =========================================================================
+// 🔥 ZYGISK INJECTION & ANTI-CHEAT BYPASS 🔥
+// =========================================================================
+#include "zygisk.hpp"
+
+class ManesModule : public zygisk::ModuleBase {
+public:
+    void onLoad(zygisk::Api *api, JNIEnv *env) override {
+        this->api = api;
+        this->env = env;
+    }
+
+    void preAppSpecialize(zygisk::AppSpecializeArgs *args) override {
+        if (!args || !args->nice_name) return;
+        const char *process = env->GetStringUTFChars(args->nice_name, nullptr);
+        
+        // Инжектим только в главный процесс игры! (Без :push и т.д.)
+        isTarget = (strcmp(process, "com.catsbit.oxidesurvivalisland") == 0);
+        env->ReleaseStringUTFChars(args->nice_name, process);
+
+        if (!isTarget) {
+            // Если это не игра - сразу выгружаем библиотеку, чтобы не крашить другие прилы
+            api->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);
+        }
+    }
+
+    void postAppSpecialize(const zygisk::AppSpecializeArgs *args) override {
+        // 🔥 ИСПРАВЛЕНИЕ БУТЛУПА: Выходим, если это не игра! 🔥
+        if (!isTarget) return;
+
+        env->GetJavaVM(&g_JVM);
+        
+        // Стираем ELF-заголовок, чтобы античит не нашел нас в памяти
+        Dl_info info;
+        if (dladdr((void*)m_thread, &info)) {
+            uintptr_t base = (uintptr_t)info.dli_fbase;
+            size_t page_size = sysconf(_SC_PAGESIZE);
+            if (mprotect((void*)base, page_size, PROT_READ | PROT_WRITE) == 0) {
+                *(uint32_t*)base = 0x00000000; 
+                mprotect((void*)base, page_size, PROT_READ | PROT_EXEC);
+            }
+        }
+        
+        // Запускаем основной поток чита только для игры!
+        std::thread(m_thread).detach();
+    }
+
+private:
+    zygisk::Api *api;
+    JNIEnv *env;
+    bool isTarget = false; // Сохраняем результат проверки
+};
+
+REGISTER_ZYGISK_MODULE(ManesModule)
