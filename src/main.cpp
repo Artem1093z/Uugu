@@ -1,5 +1,5 @@
+#include "zygisk.hpp"
 #include "utils.h"
-
 #include <signal.h>
 #include <ucontext.h>
 #include <android/native_window_jni.h>
@@ -743,8 +743,6 @@ void m_thread() {
 // =========================================================================
 // 🔥 ZYGISK INJECTION & ANTI-CHEAT BYPASS 🔥
 // =========================================================================
-#include "zygisk.hpp"
-
 class ManesModule : public zygisk::ModuleBase {
 public:
     void onLoad(zygisk::Api *api, JNIEnv *env) override {
