@@ -2,16 +2,17 @@ name: Build Zygisk Module
 
 on:
   push:
-    branches:[ main ]
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
   build:
-    runs-options: ubuntu-latest
+    runs-on: ubuntu-latest
 
     steps:
     - name: Checkout Code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Setup Android NDK
       uses: nttld/setup-ndk@v1
@@ -43,7 +44,7 @@ jobs:
         cd ..
 
     - name: Upload Magisk Module
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: ManesCheat_Zygisk
         path: ManesCheat_Zygisk.zip
