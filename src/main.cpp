@@ -5,12 +5,6 @@
 
 // 🔥 ИСПРАВЛЕНИЕ БАГА КОМПИЛЯТОРА NDK r26b (Clang 17) 🔥
 // Переопределяем сломанный макрос из zygisk.hpp на классический GNU-синтаксис
-#undef REGISTER_ZYGISK_MODULE
-#define REGISTER_ZYGISK_MODULE(clazz) \
-extern "C" __attribute__((visibility("default"), used)) \
-zygisk::ModuleBase *zygisk_module_entry(zygisk::Api *api, JNIEnv *env) { \
-    return new clazz(); \
-}
 
 #include "utils.h"
 
