@@ -4,12 +4,14 @@ project(ManesCheatZygisk)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--no-undefined -Wl,--gc-sections")
 
-# Указываем, где лежат твои файлы
-file(GLOB_RECURSE SRC_FILES 
+# Ищем основной код (main.cpp) и базовые файлы ImGui, НЕ заходя в папку backends
+file(GLOB SRC_FILES 
     "src/*.cpp" 
-    "src/imgui/*.cpp" 
-    "src/imgui/backends/*.cpp"
+    "src/imgui/*.cpp"
 )
+
+# Точечно добавляем ТОЛЬКО бэкенд OpenGL 3, который нужен для Android
+list(APPEND SRC_FILES "src/imgui/backends/imgui_impl_opengl3.cpp")
 
 include_directories(src src/imgui)
 
