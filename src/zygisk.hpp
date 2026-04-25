@@ -195,24 +195,17 @@ private:
 };
 
 // Register a class as a Zygisk module
-
 #define REGISTER_ZYGISK_MODULE(clazz) \
+extern "C" __attribute__((visibility("default"), used)) \
 void zygisk_module_entry(zygisk::internal::api_table *table, JNIEnv *env) { \
-    zygisk::internal::entry_impl<clazz>(table, env);                        \
+    zygisk::internal::module_entry<clazz>(table, env); \
 }
 
-// Register a root companion request handler function for your module
-//
-// The function runs in a superuser daemon process and handles a root companion request from
-// your module running in a target process. The function has to accept an integer value,
-// which is a socket that is connected to the target process.
-// See Api::connectCompanion() for more info.
-//
-// NOTE: the function can run concurrently on multiple threads.
-// Be aware of race conditions if you have a globally shared resource.
-
-#define REGISTER_ZYGISK_COMPANION(func) \
-void zygisk_companion_entry(int client) { func(client); }
+#define REGISTER_ZYGISK_COMPANION(clazz) \
+extern "C" __attribute__((visibility("default"), used)) \
+void zygisk_companion_entry(zygisk::internal::api_table *table, long origin_pid) { \
+    zygisk::internal::companion_entry<clazz>(table, origin_pid); \
+}
 
 /************************************************************************************
  * All the code after this point is internal code used to interface with Zygisk
