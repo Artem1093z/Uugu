@@ -1,11 +1,14 @@
-cmake_minimum_required(VERSION 3.18.1)
+cmake_minimum_required(VERSION 3.22.1)
 project(ManesCheatZygisk)
 
+# Строго требуем C++17 для поддержки новых функций Zygisk
 set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+add_compile_options(-std=c++17 -Wno-null-conversion)
+
 set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--no-undefined -Wl,--gc-sections")
 
 # ЯВНО УКАЗЫВАЕМ ТОЛЬКО НУЖНЫЕ ФАЙЛЫ
-# Игнорируем imgui_demo.cpp и imgui_freetype.cpp!
 set(SRC_FILES 
     "src/main.cpp"
     "src/imgui/imgui.cpp"
