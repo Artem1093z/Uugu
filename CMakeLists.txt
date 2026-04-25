@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.22.1)
 project(ManesCheatZygisk)
 
 set(CMAKE_CXX_STANDARD 17)
-# Убрали строгий -std=c++17, теперь компилятор снова понимает GNU-синтаксис Zygisk
+set(CMAKE_CXX_EXTENSIONS ON) # Включаем поддержку синтаксиса GNU (gnu++17)
 add_compile_options(-Wno-null-conversion)
 
 set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--no-undefined -Wl,--gc-sections")
