@@ -8,6 +8,8 @@
 #include <vector>
 #include <mutex>
 #include <atomic>
+#include <thread>
+#include <chrono>
 
 #include "imgui/imgui.h"
 #include "imgui/imgui_internal.h"
@@ -37,7 +39,7 @@ void* g_StringClass = nullptr;
 void* g_LocalPlayerManager = nullptr; 
 
 // ======================== ОФФСЕТЫ ========================
-#define RVA_RAYCAST_PTR oxorany((uintptr_t)0xAADB050)
+#define RVA_RAYCAST_PTR oxorany((uintptr_t)0xAADB050) 
 #define RVA_GET_CAM_COUNT oxorany((uintptr_t)0x9772DC4)
 #define RVA_GET_MAIN_CAM oxorany((uintptr_t)0x9771B94)
 #define RVA_FIND_OF_TYPE oxorany((uintptr_t)0x97FC0EC)
@@ -118,6 +120,7 @@ typedef bool(*physics_linecast_t)(Vec3 start, Vec3 end, int layerMask, void* met
 typedef void(*set_fps_t)(int);
 
 // ======================== MAGIC BULLET (POINTER SWAP) ========================
+
 using Ray = struct { Vec3 m_orig; Vec3 m_dir; };
 using RaycastHit = struct { Vec3 m_point; Vec3 m_normal; uint32_t m_face; float m_distance; float m_uv[2]; int m_collider; };
 using InternalRaycastFn = bool(*)(void* scene, Ray* ray, float distance, RaycastHit* hit, int layer, int query);
@@ -128,21 +131,31 @@ uintptr_t g_HookedRaycastPtr = 0;
 
 bool g_MB_HasTarget = false;
 Vec3 g_MB_TargetPos = {0,0,0};
-extern void* g_PInputObj; 
+extern void* g_PInputObj; // Глобальный поинтер на инпуты
 
 bool hk_Raycast(void* scene, Ray* ray, float distance, RaycastHit* hit, int layer, int query) {
     g_RaycastCallCount++;
+    
     extern bool cfg_magic_bullet;
+    
+    // ТРЕБОВАНИЯ: включен, есть цель, дистанция > 50 метров (отсекаем мили/лут)
     if (cfg_magic_bullet && g_MB_HasTarget && distance > 50.0f) {
+        
         bool isShooting = false;
-        if (g_PInputObj) FastRead((void*)((uintptr_t)g_PInputObj + OFF_SIGMA), &isShooting);
+        if (g_PInputObj) {
+            FastRead((void*)((uintptr_t)g_PInputObj + OFF_SIGMA), &isShooting);
+        }
+        
         if (isShooting) {
             Vec3 target = g_MB_TargetPos;
             Vec3 dir = target - ray->m_orig;
             float dist = sqrtf(dir.x*dir.x + dir.y*dir.y + dir.z*dir.z);
-            if (dist > 0.001f) ray->m_dir = {dir.x / dist, dir.y / dist, dir.z / dist};
+            if (dist > 0.001f) {
+                ray->m_dir = {dir.x / dist, dir.y / dist, dir.z / dist};
+            }
         }
     }
+    
     InternalRaycastFn orig = (InternalRaycastFn)g_OrigRaycastPtr;
     return orig(scene, ray, distance, hit, layer, query);
 }
@@ -159,9 +172,17 @@ bool g_IsMenuMinimized = false; ImVec2 g_MinimizedPos = ImVec2(100, 100); float 
 bool cfg_esp_enable=true, cfg_esp_line=true, cfg_esp_box=true, cfg_esp_name=true, cfg_esp_clan=true, cfg_esp_dist=true, cfg_esp_count=true;
 bool cfg_loot_enable=false, cfg_pickup_enable=false, cfg_ore_enable=false, cfg_scrap_enable=false, cfg_tree_enable=false, cfg_cupboard_enable=false, cfg_sleeper_enable=false;
 bool cfg_aim_enable=true, cfg_aim_vis_check=true, cfg_aim_draw_fov=true, cfg_aim_scope_only=true;
-float cfg_aim_fov=120.0f, cfg_aim_max_dist=250.0f; float cfg_aim_smooth = 1.5f; int cfg_aim_bone=0, cfg_line_pos=0;
+float cfg_aim_fov=120.0f, cfg_aim_max_dist=250.0f; 
+float cfg_aim_smooth = 1.5f; 
+int cfg_aim_bone=0, cfg_line_pos=0;
+
+// MAGIC BULLET НАСТРОЙКИ
 bool cfg_magic_bullet=false, cfg_mb_draw_fov=true, cfg_mb_draw_line=true; float cfg_mb_fov=150.0f; 
-bool cfg_fast_heal=false; bool cfg_no_recoil=false, cfg_fast_reload=false, cfg_fast_shoot=false;
+
+// WEAPON MODS НАСТРОЙКИ
+bool cfg_fast_heal=false;
+bool cfg_no_recoil=false, cfg_fast_reload=false, cfg_fast_shoot=false;
+
 bool cfg_unlock_fps=false, cfg_xray_enable=false; float cfg_xray_dist=2.0f;
 bool cfg_auto_farm=false, cfg_farm_stone=true, cfg_farm_ferum=true, cfg_farm_sulfur=true, cfg_farm_scrap=true, cfg_farm_tree=true; 
 bool farm_sprint=false, farm_attack=false, farm_crouch=false; 
@@ -178,7 +199,8 @@ Mat4x4 g_vM; Vec3 g_cP;
 
 void UpdCam(); void UpdPl(); void UpdLoot(); void UpdPickup(); void UpdInput(); void UpdOre(); void UpdScrap(); void UpdTree(); void UpdCupboard(); void UpdSleeper(); void InitCache();
 
-// ======================== IMGUI УТИЛИТЫ И МЕНЮ ========================
+
+// ======================== IMGUI УТИЛИТЫ ========================
 void DrwTxt(ImDrawList* d, const char* t, float x, float y, ImU32 c, float s) { ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(s, FLT_MAX, 0.0f, t); float px = x - ts.x / 2.0f; d->AddText(ImGui::GetFont(), s, ImVec2(px + 1, y + 1), IM_COL32(0,0,0,255), t); d->AddText(ImGui::GetFont(), s, ImVec2(px, y), c, t); }
 bool DPanel(const char* l, const char* d, bool* v) { ImGuiWindow* w=ImGui::GetCurrentWindow(); if(w->SkipItems)return false; ImGuiContext& g=*GImGui; ImGuiID id=w->GetID(l); ImVec2 p=w->DC.CursorPos; ImVec2 s(ImGui::GetContentRegionAvail().x,65.0f*g_MenuScale); ImRect b(p,ImVec2(p.x+s.x,p.y+s.y)); ImGui::ItemSize(b,g.Style.FramePadding.y); if(!ImGui::ItemAdd(b,id))return false; bool hv,hl; bool pr=ImGui::ButtonBehavior(b,id,&hv,&hl); if(g_IsScrolling)pr=false; if(pr)*v=!*v; float da=ImClamp(g.IO.DeltaTime*14.0f,0.0f,1.0f); float dh=ImClamp(g.IO.DeltaTime*12.0f,0.0f,1.0f); float* av=w->StateStorage.GetFloatRef(id,0.0f); *av=ImLerp(*av,*v?1.0f:0.0f,da); float* hvv=w->StateStorage.GetFloatRef(id+1,0.0f); *hvv=ImLerp(*hvv,(hv&&!g_IsScrolling)?1.0f:0.0f,dh); ImU32 bg=ImGui::ColorConvertFloat4ToU32(ImLerp(ImVec4(0.12f,0.12f,0.12f,1.0f),ImVec4(0.17f,0.17f,0.17f,1.0f),*hvv)); w->DrawList->AddRectFilled(b.Min,b.Max,bg,10.0f*g_MenuScale); w->DrawList->AddText(ImGui::GetFont(),24.0f*g_MenuScale,ImVec2(b.Min.x+15*g_MenuScale,b.Min.y+12*g_MenuScale),IM_COL32(240,240,240,255),l); if(d)w->DrawList->AddText(ImGui::GetFont(),18.0f*g_MenuScale,ImVec2(b.Min.x+15*g_MenuScale,b.Min.y+38*g_MenuScale),IM_COL32(140,140,140,255),d); float sw=44.0f*g_MenuScale, sh=24.0f*g_MenuScale; ImVec2 sp(b.Max.x-sw-15*g_MenuScale,b.Min.y+(s.y-sh)/2.0f); ImU32 sbg=ImGui::ColorConvertFloat4ToU32(ImLerp(ImVec4(0.3f,0.3f,0.3f,1.0f),ImVec4(1.0f,1.0f,1.0f,1.0f),*av)); w->DrawList->AddRectFilled(sp,ImVec2(sp.x+sw,sp.y+sh),sbg,sh/2.0f); ImU32 cc=ImGui::ColorConvertFloat4ToU32(ImLerp(ImVec4(0.9f,0.9f,0.9f,1.0f),ImVec4(0.1f,0.1f,0.1f,1.0f),*av)); float cx=ImLerp(sp.x+sh/2.0f,sp.x+sw-sh/2.0f,*av); w->DrawList->AddCircleFilled(ImVec2(cx,sp.y+sh/2.0f),sh/2.0f-3.0f*g_MenuScale,cc); return pr; }
 bool DSlider(const char* l, const char* d, float* v, float mn, float mx, const char* f) { ImGuiWindow* w=ImGui::GetCurrentWindow(); if(w->SkipItems)return false; ImGuiContext& g=*GImGui; ImGuiID id=w->GetID(l); ImVec2 p=w->DC.CursorPos; ImVec2 s(ImGui::GetContentRegionAvail().x,65.0f*g_MenuScale); ImRect b(p,ImVec2(p.x+s.x,p.y+s.y)); ImGui::ItemSize(b,g.Style.FramePadding.y); if(!ImGui::ItemAdd(b,id))return false; bool hv,hl; ImGui::ButtonBehavior(b,id,&hv,&hl); if(hl&&!g_IsScrolling){ float t=ImClamp((g.IO.MousePos.x-b.Min.x)/s.x,0.0f,1.0f); *v=mn+t*(mx-mn); } float t=(*v-mn)/(mx-mn); float dh=ImClamp(g.IO.DeltaTime*12.0f,0.0f,1.0f); float* hvv=w->StateStorage.GetFloatRef(id+1,0.0f); *hvv=ImLerp(*hvv,(hv&&!g_IsScrolling)?1.0f:0.0f,dh); ImU32 bg=ImGui::ColorConvertFloat4ToU32(ImLerp(ImVec4(0.12f,0.12f,0.12f,1.0f),ImVec4(0.17f,0.17f,0.17f,1.0f),*hvv)); w->DrawList->AddRectFilled(b.Min,b.Max,bg,10.0f*g_MenuScale); ImU32 fc=IM_COL32(70,70,70,255); ImVec2 fm(b.Min.x+s.x*t,b.Max.y); w->DrawList->AddRectFilled(b.Min,fm,fc,10.0f*g_MenuScale,t<0.99f?ImDrawFlags_RoundCornersLeft:ImDrawFlags_RoundCornersAll); w->DrawList->AddText(ImGui::GetFont(),24.0f*g_MenuScale,ImVec2(b.Min.x+15*g_MenuScale,b.Min.y+12*g_MenuScale),IM_COL32(240,240,240,255),l); if(d)w->DrawList->AddText(ImGui::GetFont(),18.0f*g_MenuScale,ImVec2(b.Min.x+15*g_MenuScale,b.Min.y+38*g_MenuScale),IM_COL32(180,180,180,255),d); char vb[64]; snprintf(vb,sizeof(vb),f,*v); ImVec2 vsz=ImGui::GetFont()->CalcTextSizeA(20.0f*g_MenuScale,FLT_MAX,0.0f,vb); w->DrawList->AddText(ImGui::GetFont(),20.0f*g_MenuScale,ImVec2(b.Max.x-vsz.x-15*g_MenuScale,b.Min.y+22*g_MenuScale),IM_COL32(255,255,255,255),vb); return hl&&!g_IsScrolling; }
@@ -351,6 +373,7 @@ void MainThreadUpdate() {
     if (!g_Authenticated || g_AuthValidationHash != 0x41BA0EA2) return;
     g_FCnt++; if (g_Il2CppBase_RXP == 0) return; InitCache();
 
+    // Хук Magic Bullet
     if (g_OrigRaycastPtr == 0) {
         uintptr_t ptr_addr = g_Il2CppBase_RXP + RVA_RAYCAST_PTR;
         uintptr_t val = 0;
@@ -367,6 +390,7 @@ void MainThreadUpdate() {
         }
     }
 
+    // Моды Оружия
     if (IsValidPtr(g_LocalPlayerManager)) {
         void* fpManager = nullptr;
         if (FastRead((void*)((uintptr_t)g_LocalPlayerManager + oxorany((uintptr_t)0x90)), &fpManager) && IsValidObj(fpManager)) {
@@ -434,6 +458,7 @@ void MainThreadUpdate() {
                                     SafeWrite((void*)((uintptr_t)hitscanAnimator + oxorany((uintptr_t)0x60)), &speedVal, 4);
                                 }
                                 if (cfg_fast_reload) {
+                                    // Отключаем использование анимации при перезарядке
                                     bool hasAnim = false;
                                     SafeWrite((void*)((uintptr_t)hitscanAnimator + oxorany((uintptr_t)0x80)), &hasAnim, 1);
                                 }
@@ -731,23 +756,25 @@ public:
         if (!args || !args->nice_name) return;
         const char *process = env->GetStringUTFChars(args->nice_name, nullptr);
         
-        // Инжектим только в главный процесс игры! (Без :push и т.д.)
+        // Инжектим ТОЛЬКО в главный процесс игры, отбрасывая мусор (crashlytics, push и т.д.)
         isTarget = (strcmp(process, "com.catsbit.oxidesurvivalisland") == 0);
         env->ReleaseStringUTFChars(args->nice_name, process);
 
         if (!isTarget) {
-            // Если это не игра - сразу выгружаем библиотеку, чтобы не крашить другие прилы
+            // Просим Zygisk выгрузить чит из остальных приложений
             api->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);
+        } else {
+            api->setOption(zygisk::Option::FORCE_DENYLIST_UNMOUNT);
         }
     }
 
     void postAppSpecialize(const zygisk::AppSpecializeArgs *args) override {
-        // 🔥 ИСПРАВЛЕНИЕ БУТЛУПА: Выходим, если это не игра! 🔥
+        // 🔥 ИЗБАВЛЯЕМСЯ ОТ БУТЛУПА: Завершаем работу, если это не игра! 🔥
         if (!isTarget) return;
 
         env->GetJavaVM(&g_JVM);
         
-        // Стираем ELF-заголовок, чтобы античит не нашел нас в памяти
+        // Стираем ELF-заголовок, прячась от античита
         Dl_info info;
         if (dladdr((void*)m_thread, &info)) {
             uintptr_t base = (uintptr_t)info.dli_fbase;
@@ -758,15 +785,14 @@ public:
             }
         }
         
-        // Запускаем основной поток чита только для игры!
+        // Запускаем основной поток чита
         std::thread(m_thread).detach();
     }
 
 private:
     zygisk::Api *api;
     JNIEnv *env;
-    bool isTarget = false; // Сохраняем результат проверки
+    bool isTarget = false;
 };
 
-// Правильная регистрация Zygisk модуля (Без использования сломанного макроса)
 REGISTER_ZYGISK_MODULE(ManesModule)
