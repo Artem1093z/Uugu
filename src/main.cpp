@@ -1,7 +1,22 @@
-#include "zygisk.hpp"
+// =========================================================================
+// 🔥 ZYGISK INJECTION & FIX 🔥
+// =========================================================================
+#include "zygisk.hpp" 
+
+// 🔥 ИСПРАВЛЕНИЕ БАГА КОМПИЛЯТОРА NDK r26b (Clang 17) 🔥
+// Переопределяем сломанный макрос из zygisk.hpp на классический GNU-синтаксис
+#undef REGISTER_ZYGISK_MODULE
+#define REGISTER_ZYGISK_MODULE(clazz) \
+extern "C" __attribute__((visibility("default"), used)) \
+zygisk::ModuleBase *zygisk_module_entry(zygisk::Api *api, JNIEnv *env) { \
+    return new clazz(); \
+}
+
 #include "utils.h"
+
 #include <signal.h>
 #include <ucontext.h>
+// ... и дальше весь остальной твой код (android/native_window_jni.h и т.д.) ...
 #include <android/native_window_jni.h>
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
