@@ -1,0 +1,49 @@
+name: Build Zygisk Module
+
+on:
+  push:
+    branches:[ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-options: ubuntu-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v3
+
+    - name: Setup Android NDK
+      uses: nttld/setup-ndk@v1
+      id: setup-ndk
+      with:
+        ndk-version: r26b
+
+    - name: Build Library (ARM64)
+      run: |
+        mkdir build
+        cd build
+        cmake -DCMAKE_TOOLCHAIN_FILE=${{ steps.setup-ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-24 ..
+        make -j4
+        cd ..
+
+    - name: Package Magisk Module
+      run: |
+        mkdir output
+        cp module/module.prop output/
+        cp module/customize.sh output/
+        
+        # Создаем структуру папок Zygisk (только для ARM64, так как игра 64-битная)
+        mkdir -p output/zygisk
+        cp build/libmanes_zygisk.so output/zygisk/arm64-v8a.so
+        
+        # Упаковываем в ZIP
+        cd output
+        zip -r9 ../ManesCheat_Zygisk.zip .
+        cd ..
+
+    - name: Upload Magisk Module
+      uses: actions/upload-artifact@v3
+      with:
+        name: ManesCheat_Zygisk
+        path: ManesCheat_Zygisk.zip
