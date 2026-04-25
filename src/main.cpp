@@ -6,14 +6,17 @@
 #include <GLES3/gl3.h>
 #include <thread>
 #include <chrono>
+#include <unistd.h>
 
 #include "imgui/imgui.h"
 #include "imgui/backends/imgui_impl_opengl3.h"
 
 // ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ДЛЯ EGL И ZYGISK
 JavaVM* g_JVM = nullptr; 
+jobject g_Activity = nullptr;    // <--- ВЕРНУЛ СПЕЦИАЛЬНО ДЛЯ utils.h
 jobject g_SurfaceView = nullptr; 
 bool g_SurfaceReady = false; 
+pid_t g_Pid = 0;                 // <--- ВЕРНУЛ ДЛЯ ПОИСКА ПАМЯТИ
 int g_ScreenW = 0, g_ScreenH = 0;
 uintptr_t g_Il2CppBase_RXP = 0;
 
@@ -109,6 +112,8 @@ void r_thread() {
 
 // ======================== ГЛАВНЫЙ ПОТОК ========================
 void m_thread() { 
+    g_Pid = getpid(); // Инициализируем PID для utils.h
+    
     // Ждем загрузки игрового движка
     while(!g_Il2CppBase_RXP) { 
         g_Il2CppBase_RXP = get_lib_rxp("libil2cpp.so"); 
