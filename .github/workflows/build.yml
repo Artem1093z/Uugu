@@ -1,56 +1,28 @@
-name: Build Zygisk Module
+name: Build Fake libng.so
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-    - name: Checkout Code
-      uses: actions/checkout@v4
-
-    - name: Setup Android NDK
-      uses: nttld/setup-ndk@v1
+    - uses: actions/checkout@v4
+    - uses: nttld/setup-ndk@v1
       id: setup-ndk
       with:
         ndk-version: r26b
 
-    # 🔥 ТОТ САМЫЙ АВТО-ПАТЧЕР 🔥
-    # Он сам исправит синтаксис внутри zygisk.hpp перед компиляцией!
-    - name: Fix zygisk.hpp for Clang 17
+    - name: Build Library
       run: |
-        sed -i 's/\[\[gnu::visibility("default")\]\] \[\[gnu::used\]\]/__attribute__((visibility("default"), used))/g' src/zygisk.hpp
-
-    - name: Build Library (ARM64)
-      run: |
-        mkdir build
-        cd build
+        mkdir build && cd build
         cmake -DCMAKE_TOOLCHAIN_FILE=${{ steps.setup-ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-24 ..
         make -j4
-        cd ..
 
-    - name: Package Magisk Module
-      run: |
-        mkdir output
-        cp module/module.prop output/
-        cp module/customize.sh output/
-        
-        # Создаем структуру папок Zygisk (только для ARM64)
-        mkdir -p output/zygisk
-        cp build/libmanes_zygisk.so output/zygisk/arm64-v8a.so
-        
-        # Упаковываем в ZIP
-        cd output
-        zip -r9 ../ManesCheat_Zygisk.zip .
-        cd ..
-
-    - name: Upload Magisk Module
+    - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: ManesCheat_Zygisk
-        path: ManesCheat_Zygisk.zip
+        name: Fake_libng
+        path: build/libng.so
