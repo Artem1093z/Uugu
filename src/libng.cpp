@@ -188,9 +188,9 @@ void* g_LocalPlayerManager = nullptr;
 
 // ======================== ОФФСЕТЫ ========================
 #define RVA_UPDATE oxorany((uintptr_t)0x9032A18) 
-#define RVA_RAYCAST oxorany((uintptr_t)0x9D8D9B4) // ПРАВИЛЬНАЯ C# ОБЕРТКА
-#define RVA_GET_AXIS oxorany((uintptr_t)0x9D5E788) // НОВЫЙ INPUT HOOK
-#define RVA_GET_AXIS_RAW oxorany((uintptr_t)0x9D5E8F8) // НОВЫЙ INPUT HOOK
+#define RVA_RAYCAST oxorany((uintptr_t)0x9D8D9B4) 
+#define RVA_GET_AXIS oxorany((uintptr_t)0x9D5E788) 
+#define RVA_GET_AXIS_RAW oxorany((uintptr_t)0x9D5E8F8) 
 
 #define RVA_GET_CAM_COUNT oxorany((uintptr_t)0x9C56068)
 #define RVA_GET_MAIN_CAM oxorany((uintptr_t)0x9C54E38)
@@ -271,16 +271,19 @@ typedef void*(*g_name_t)(void* o, void* m); typedef Vec3(*g_mpos_t)(void* m); ty
 typedef bool(*physics_linecast_t)(Vec3 start, Vec3 end, int layerMask, void* method);
 typedef void(*set_fps_t)(int);
 
-// ======================== MAGIC BULLET & INPUT AIMBOT (DOBBY HOOKS) ========================
+// ======================== MAGIC BULLET & INPUT AIMBOT ========================
 
 using Ray = struct { Vec3 m_orig; Vec3 m_dir; };
 using RaycastHit = struct { Vec3 m_point; Vec3 m_normal; uint32_t m_face; float m_distance; float m_uv[2]; int m_collider; };
-using InternalRaycastFn = bool(*)(void* scene, Ray* ray, float distance, RaycastHit* hit, int layer, int query);
-typedef float(*get_axis_t)(void* axisName);
+
+// Исправленные сигнатуры для безопасного IL2CPP-хукинга (добавлен MethodInfo*)
+using InternalRaycastFn = bool(*)(void* scene, Ray* ray, float distance, RaycastHit* hit, int layer, int query, void* method);
+typedef float(*get_axis_t)(void* axisName, void* method);
 
 InternalRaycastFn orig_Raycast = nullptr;
 get_axis_t orig_GetAxis = nullptr;
 get_axis_t orig_GetAxisRaw = nullptr;
+void (*orig_Update)(void*, void*);
 
 bool g_MB_HasTarget = false;
 Vec3 g_MB_TargetPos = {0,0,0};
@@ -289,7 +292,7 @@ void* g_PInputObj = nullptr;
 bool g_HasAimTarget = false;
 Vec2 g_AimTargetDelta = {0, 0};
 
-bool hk_Raycast(void* scene, Ray* ray, float distance, RaycastHit* hit, int layer, int query) {
+bool hk_Raycast(void* scene, Ray* ray, float distance, RaycastHit* hit, int layer, int query, void* method) {
     extern bool cfg_magic_bullet;
     if (cfg_magic_bullet && g_MB_HasTarget && distance > 50.0f) {
         bool isShooting = false;
@@ -301,30 +304,31 @@ bool hk_Raycast(void* scene, Ray* ray, float distance, RaycastHit* hit, int laye
             if (dist > 0.001f) { ray->m_dir = {dir.x / dist, dir.y / dist, dir.z / dist}; }
         }
     }
-    return orig_Raycast(scene, ray, distance, hit, layer, query);
+    return orig_Raycast(scene, ray, distance, hit, layer, query, method);
 }
 
-// УНИВЕРСАЛЬНЫЙ СИМУЛЯТОР МЫШИ ДЛЯ AIMBOT И AUTOFARM (БЕЗ PITCH/YAW)
+// УНИВЕРСАЛЬНЫЙ СИМУЛЯТОР МЫШИ ДЛЯ AIMBOT (Безопасное чтение стрингов)
 float process_axis_hook(void* axisName, float original_value) {
     extern bool cfg_aim_enable;
     extern bool cfg_auto_farm;
     extern float cfg_aim_smooth;
 
-    if (!(cfg_aim_enable || cfg_auto_farm) || !g_HasAimTarget || !IsValidPtr(axisName)) return original_value;
+    if (!(cfg_aim_enable || cfg_auto_farm) || !g_HasAimTarget) return original_value;
+    if (!axisName || (uintptr_t)axisName < 0x100000) return original_value; // Защита от крашей (Null Pointer)
     
-    int32_t len = *(int32_t*)((uintptr_t)axisName + 0x10);
-    if (len == 7) {
-        char16_t* chars = (char16_t*)((uintptr_t)axisName + 0x14);
-        if (chars[0] == u'M') { // Проверяем на "Mouse X" или "Mouse Y"
-            if (chars[6] == u'X') {
+    int32_t len = 0;
+    if (FastRead((void*)((uintptr_t)axisName + OFF_STRING_LEN), &len) && len == 7) {
+        char16_t chars[8] = {0};
+        // 7 символов = 14 байт
+        if (FastRead((void*)((uintptr_t)axisName + OFF_STRING_CHARS), &chars, 14)) { 
+            if (chars[0] == u'M' && chars[6] == u'X') {
                 float step = g_AimTargetDelta.x * (0.15f / cfg_aim_smooth);
-                if (step > 6.0f) step = 6.0f; // Ограничение резкости (6 = быстрый флик)
+                if (step > 6.0f) step = 6.0f; 
                 if (step < -6.0f) step = -6.0f;
                 return original_value + step;
-            } else if (chars[6] == u'Y') {
-                // В Unity движение мыши вверх (положительный Y) опускает pitch (поворот камеры вверх).
+            } else if (chars[0] == u'M' && chars[6] == u'Y') {
                 float step = -g_AimTargetDelta.y * (0.15f / cfg_aim_smooth);
-                if (step > 6.0f) step = 6.0f;
+                if (step > 6.0f) step = 6.0f; 
                 if (step < -6.0f) step = -6.0f;
                 return original_value + step;
             }
@@ -333,12 +337,12 @@ float process_axis_hook(void* axisName, float original_value) {
     return original_value;
 }
 
-float hk_GetAxis(void* axisName) {
-    return process_axis_hook(axisName, orig_GetAxis(axisName));
+float hk_GetAxis(void* axisName, void* method) {
+    return process_axis_hook(axisName, orig_GetAxis(axisName, method));
 }
 
-float hk_GetAxisRaw(void* axisName) {
-    return process_axis_hook(axisName, orig_GetAxisRaw(axisName));
+float hk_GetAxisRaw(void* axisName, void* method) {
+    return process_axis_hook(axisName, orig_GetAxisRaw(axisName, method));
 }
 
 // AUTH GLOBALS
@@ -662,7 +666,6 @@ void MainThreadUpdate() {
     g_MB_HasTarget = (bFD_MB < 9999.0f);
     if (g_MB_HasTarget) g_MB_TargetPos = bT_MB;
 
-    // ОБНОВЛЕННАЯ ЛОГИКА ФАРМА (Мы больше не пишем углы в память, мы используем Input Simulator!)
     if (cfg_auto_farm && IsValidPtr(lML)) {
         if (bestTargetValid) { 
             float requiredDist = bestTargetIsNarrow ? 1.8f : 2.5f; 
@@ -675,11 +678,9 @@ void MainThreadUpdate() {
     Vec3 inputTargetPos = {0,0,0};
 
     if (cfg_auto_farm && bestTargetValid) {
-        inputTargetPos = bestTargetPos;
-        has_target_for_input = true;
+        inputTargetPos = bestTargetPos; has_target_for_input = true;
     } else if (cfg_aim_enable && bFD < 9999.0f) {
-        inputTargetPos = bT;
-        has_target_for_input = true;
+        inputTargetPos = bT; has_target_for_input = true;
     }
 
     if (has_target_for_input && IsValidPtr(lML)) {
@@ -693,7 +694,6 @@ void MainThreadUpdate() {
             while (delta_yaw > 180.0f) delta_yaw -= 360.0f;
             while (delta_yaw < -180.0f) delta_yaw += 360.0f;
             
-            // Запоминаем дельту для наших Dobby хуков на `Input.GetAxis`
             g_AimTargetDelta.x = delta_yaw;
             g_AimTargetDelta.y = delta_pitch;
             g_HasAimTarget = true;
@@ -701,11 +701,10 @@ void MainThreadUpdate() {
     } else { g_HasAimTarget = false; }
 }
 
-void (*orig_Update)(void*);
-void hk_Update(void* instance) {
+void hk_Update(void* instance, void* method) {
     g_RenderCount++;
     MainThreadUpdate();
-    if (orig_Update) orig_Update(instance);
+    if (orig_Update) orig_Update(instance, method);
 }
 
 void FreezeThread() {
@@ -749,10 +748,19 @@ void r_thread() {
 
 void m_thread() { 
     g_Pid = getpid(); 
-    while(!g_Il2CppBase_RXP) { g_Il2CppBase_RXP = get_lib_rxp(oxorany("libil2cpp.so")); std::this_thread::sleep_for(std::chrono::seconds(1)); } 
-    std::this_thread::sleep_for(std::chrono::seconds(3)); 
 
-    // Инлайн хуки (Dobby)
+    // Стираем следы трояна БЕЗОПАСНО, после того как игра его полностью загрузила
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    Dl_info info;
+    if (dladdr((void*)m_thread, &info)) {
+        uintptr_t base = (uintptr_t)info.dli_fbase; size_t page_size = sysconf(_SC_PAGESIZE);
+        if (mprotect((void*)base, page_size, PROT_READ | PROT_WRITE) == 0) { *(uint32_t*)base = 0x00000000; mprotect((void*)base, page_size, PROT_READ | PROT_EXEC); }
+    }
+
+    while(!g_Il2CppBase_RXP) { g_Il2CppBase_RXP = get_lib_rxp(oxorany("libil2cpp.so")); std::this_thread::sleep_for(std::chrono::seconds(1)); } 
+    std::this_thread::sleep_for(std::chrono::seconds(2)); 
+
+    // Инлайн хуки (Dobby) с ИДЕАЛЬНОЙ СИГНАТУРОЙ!
     DobbyHook((void*)(g_Il2CppBase_RXP + RVA_UPDATE), (void*)hk_Update, (void**)&orig_Update);
     DobbyHook((void*)(g_Il2CppBase_RXP + RVA_RAYCAST), (void*)hk_Raycast, (void**)&orig_Raycast);
     DobbyHook((void*)(g_Il2CppBase_RXP + RVA_GET_AXIS), (void*)hk_GetAxis, (void**)&orig_GetAxis);
@@ -764,20 +772,11 @@ void m_thread() {
 }
 
 // =====================================================================
-// 🔥 ТОЧКА ВХОДА ТРОЯНСКОГО КОНЯ (Вызывается игрой при загрузке libng)
+// 🔥 ТОЧКА ВХОДА ТРОЯНСКОГО КОНЯ 🔥
 // =====================================================================
 EXPORT void JNICALL Java_com_ng_application_NGApplication_NG_1attachBaseContext(JNIEnv *env, jobject thiz, jobject context) {
     LOGI("[+] Fake NG_attachBaseContext executed! Hijacking the process...");
-    
     env->GetJavaVM(&g_JVM); 
-    
-    Dl_info info;
-    if (dladdr((void*)m_thread, &info)) {
-        uintptr_t base = (uintptr_t)info.dli_fbase;
-        size_t page_size = sysconf(_SC_PAGESIZE);
-        if (mprotect((void*)base, page_size, PROT_READ | PROT_WRITE) == 0) { *(uint32_t*)base = 0x00000000; mprotect((void*)base, page_size, PROT_READ | PROT_EXEC); }
-    }
-    
     std::thread(m_thread).detach();
 }
 
@@ -792,9 +791,7 @@ EXPORT int ng_ioctl(uint32_t cmd, void *arg, uint64_t extra) {
             uint8_t ctx[0x80];
             memset(ctx, 0x00, 0x20); memset(ctx + 0x20, 0xFF, 0x50); ctx[0x70] = 0;
             if ((initialize_internal_call_context(ctx) & 1) == 0) return -1;
-            lrand48();
-            finalize_internal_call_context(ctx, arg);
-            return 0;
+            lrand48(); finalize_internal_call_context(ctx, arg); return 0;
         }
         case 3: return il2cpp_add_internal_call_impl(static_cast<char *>(arg), extra);
         case 4: return il2cpp_resolve_icall_impl(static_cast<char *>(arg), reinterpret_cast<uint64_t *>(extra));
