@@ -308,6 +308,7 @@ bool hk_Raycast(void* scene, Ray* ray, float distance, RaycastHit* hit, int laye
 }
 
 // УНИВЕРСАЛЬНЫЙ СИМУЛЯТОР МЫШИ ДЛЯ AIMBOT (Безопасное чтение стрингов)
+// УНИВЕРСАЛЬНЫЙ СИМУЛЯТОР МЫШИ ДЛЯ AIMBOT (Безопасное чтение стрингов)
 float process_axis_hook(void* axisName, float original_value) {
     extern bool cfg_aim_enable;
     extern bool cfg_auto_farm;
@@ -319,8 +320,8 @@ float process_axis_hook(void* axisName, float original_value) {
     int32_t len = 0;
     if (FastRead((void*)((uintptr_t)axisName + OFF_STRING_LEN), &len) && len == 7) {
         char16_t chars[8] = {0};
-        // 7 символов = 14 байт
-        if (FastRead((void*)((uintptr_t)axisName + OFF_STRING_CHARS), &chars, 14)) { 
+        // ИСПОЛЬЗУЕМ SafeRead вместо FastRead для чтения массива с указанием размера:
+        if (SafeRead((void*)((uintptr_t)axisName + OFF_STRING_CHARS), chars, 14)) { 
             if (chars[0] == u'M' && chars[6] == u'X') {
                 float step = g_AimTargetDelta.x * (0.15f / cfg_aim_smooth);
                 if (step > 6.0f) step = 6.0f; 
@@ -336,7 +337,6 @@ float process_axis_hook(void* axisName, float original_value) {
     }
     return original_value;
 }
-
 float hk_GetAxis(void* axisName, void* method) {
     return process_axis_hook(axisName, orig_GetAxis(axisName, method));
 }
