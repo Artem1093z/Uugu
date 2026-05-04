@@ -172,7 +172,6 @@ extern "C" int il2cpp_resolve_icall_impl(char *name, uint64_t *out_method) {
     *out_method = node->method; free_string(&short_name); return 0;
 }
 
-
 // =====================================================================
 // 🔥 СИСТЕМНЫЕ ПЕРЕМЕННЫЕ ЧИТА 🔥
 // =====================================================================
@@ -188,9 +187,8 @@ void* g_LocalPlayerManager = nullptr;
 
 // ======================== ОФФСЕТЫ ========================
 #define RVA_UPDATE oxorany((uintptr_t)0x9032A18) 
-#define RVA_RAYCAST oxorany((uintptr_t)0x9D8D9B4) 
-#define RVA_GET_AXIS oxorany((uintptr_t)0x9D5E788) 
-#define RVA_GET_AXIS_RAW oxorany((uintptr_t)0x9D5E8F8) 
+#define RVA_RAYCAST oxorany((uintptr_t)0x9D8DA30)  
+#define RVA_ON_SCREEN_MOUSE_TYPEINFO oxorany((uintptr_t)0xAC51C10) // <-- Прямой оффсет TypeInfo!
 
 #define RVA_GET_CAM_COUNT oxorany((uintptr_t)0x9C56068)
 #define RVA_GET_MAIN_CAM oxorany((uintptr_t)0x9C54E38)
@@ -271,28 +269,21 @@ typedef void*(*g_name_t)(void* o, void* m); typedef Vec3(*g_mpos_t)(void* m); ty
 typedef bool(*physics_linecast_t)(Vec3 start, Vec3 end, int layerMask, void* method);
 typedef void(*set_fps_t)(int);
 
-// ======================== MAGIC BULLET & INPUT AIMBOT ========================
+// ======================== MAGIC BULLET (DOBBY INLINE HOOK) ========================
 
 using Ray = struct { Vec3 m_orig; Vec3 m_dir; };
 using RaycastHit = struct { Vec3 m_point; Vec3 m_normal; uint32_t m_face; float m_distance; float m_uv[2]; int m_collider; };
-
-// Исправленные сигнатуры для безопасного IL2CPP-хукинга (добавлен MethodInfo*)
-using InternalRaycastFn = bool(*)(void* scene, Ray* ray, float distance, RaycastHit* hit, int layer, int query, void* method);
-typedef float(*get_axis_t)(void* axisName, void* method);
+using InternalRaycastFn = bool(*)(void* scene, Ray* ray, float distance, RaycastHit* hit, int layer, int query);
 
 InternalRaycastFn orig_Raycast = nullptr;
-get_axis_t orig_GetAxis = nullptr;
-get_axis_t orig_GetAxisRaw = nullptr;
-void (*orig_Update)(void*, void*);
+std::atomic<int> g_RaycastCallCount(0);
 
 bool g_MB_HasTarget = false;
 Vec3 g_MB_TargetPos = {0,0,0};
 void* g_PInputObj = nullptr;
 
-bool g_HasAimTarget = false;
-Vec2 g_AimTargetDelta = {0, 0};
-
-bool hk_Raycast(void* scene, Ray* ray, float distance, RaycastHit* hit, int layer, int query, void* method) {
+bool hk_Raycast(void* scene, Ray* ray, float distance, RaycastHit* hit, int layer, int query) {
+    g_RaycastCallCount++;
     extern bool cfg_magic_bullet;
     if (cfg_magic_bullet && g_MB_HasTarget && distance > 50.0f) {
         bool isShooting = false;
@@ -304,45 +295,7 @@ bool hk_Raycast(void* scene, Ray* ray, float distance, RaycastHit* hit, int laye
             if (dist > 0.001f) { ray->m_dir = {dir.x / dist, dir.y / dist, dir.z / dist}; }
         }
     }
-    return orig_Raycast(scene, ray, distance, hit, layer, query, method);
-}
-
-// УНИВЕРСАЛЬНЫЙ СИМУЛЯТОР МЫШИ ДЛЯ AIMBOT (Безопасное чтение стрингов)
-// УНИВЕРСАЛЬНЫЙ СИМУЛЯТОР МЫШИ ДЛЯ AIMBOT (Безопасное чтение стрингов)
-float process_axis_hook(void* axisName, float original_value) {
-    extern bool cfg_aim_enable;
-    extern bool cfg_auto_farm;
-    extern float cfg_aim_smooth;
-
-    if (!(cfg_aim_enable || cfg_auto_farm) || !g_HasAimTarget) return original_value;
-    if (!axisName || (uintptr_t)axisName < 0x100000) return original_value; // Защита от крашей (Null Pointer)
-    
-    int32_t len = 0;
-    if (FastRead((void*)((uintptr_t)axisName + OFF_STRING_LEN), &len) && len == 7) {
-        char16_t chars[8] = {0};
-        // ИСПОЛЬЗУЕМ SafeRead вместо FastRead для чтения массива с указанием размера:
-        if (SafeRead((void*)((uintptr_t)axisName + OFF_STRING_CHARS), chars, 14)) { 
-            if (chars[0] == u'M' && chars[6] == u'X') {
-                float step = g_AimTargetDelta.x * (0.15f / cfg_aim_smooth);
-                if (step > 6.0f) step = 6.0f; 
-                if (step < -6.0f) step = -6.0f;
-                return original_value + step;
-            } else if (chars[0] == u'M' && chars[6] == u'Y') {
-                float step = -g_AimTargetDelta.y * (0.15f / cfg_aim_smooth);
-                if (step > 6.0f) step = 6.0f; 
-                if (step < -6.0f) step = -6.0f;
-                return original_value + step;
-            }
-        }
-    }
-    return original_value;
-}
-float hk_GetAxis(void* axisName, void* method) {
-    return process_axis_hook(axisName, orig_GetAxis(axisName, method));
-}
-
-float hk_GetAxisRaw(void* axisName, void* method) {
-    return process_axis_hook(axisName, orig_GetAxisRaw(axisName, method));
+    return orig_Raycast(scene, ray, distance, hit, layer, query);
 }
 
 // AUTH GLOBALS
@@ -467,6 +420,7 @@ void DrawESP() {
 void InitCache() {
     static bool i_d = false; if (i_d) return; 
     static uint64_t l_t = 0; if (g_FCnt - l_t < 120) return; l_t = g_FCnt; 
+    
     if (!g_StringClass) {
         auto gmc = (g_mc_t)(g_Il2CppBase_RXP + RVA_GET_MAIN_CAM); auto gn = (g_name_t)(g_Il2CppBase_RXP + RVA_GET_NAME);
         if (IsMemValid((void*)gmc) && IsMemValid((void*)gn)) {
@@ -516,36 +470,20 @@ void MainThreadUpdate() {
                             void* weaponConfig = nullptr; void* hitscanAnimator = nullptr;
                             FastRead((void*)((uintptr_t)currentWeapon + oxorany((uintptr_t)0x138)), &weaponConfig);
                             FastRead((void*)((uintptr_t)currentWeapon + oxorany((uintptr_t)0x1F0)), &hitscanAnimator);
-
                             if (IsValidObj(weaponConfig)) {
                                 if (cfg_fast_shoot) {
                                     float origFr = 0;
                                     if (FastRead((void*)((uintptr_t)weaponConfig + oxorany((uintptr_t)0x34)), &origFr)) {
-                                        if (origFr < 5.0f && origFr > 0.001f) { float val = 0.02f; SafeWrite((void*)((uintptr_t)weaponConfig + oxorany((uintptr_t)0x34)), &val, 4); }
+                                        if (origFr < 5.0f && origFr > 0.001f) { float val = 0.02f; SafeWrite((void*)((uintptr_t)weaponConfig + oxorany((uintptr_t)0x34)), &val, 4); } 
                                         else if (origFr >= 5.0f && origFr < 10000.0f) { float val = 4000.0f; SafeWrite((void*)((uintptr_t)weaponConfig + oxorany((uintptr_t)0x34)), &val, 4); }
                                     }
                                 }
-                                if (cfg_fast_reload) {
-                                    float val = 0.05f;
-                                    SafeWrite((void*)((uintptr_t)weaponConfig + oxorany((uintptr_t)0x48)), &val, 4); 
-                                    SafeWrite((void*)((uintptr_t)weaponConfig + oxorany((uintptr_t)0x4C)), &val, 4); 
-                                }
+                                if (cfg_fast_reload) { float val = 0.05f; SafeWrite((void*)((uintptr_t)weaponConfig + oxorany((uintptr_t)0x48)), &val, 4); SafeWrite((void*)((uintptr_t)weaponConfig + oxorany((uintptr_t)0x4C)), &val, 4); }
                                 if (cfg_no_recoil) {
                                     void* recoilConfig = nullptr;
-                                    if (FastRead((void*)((uintptr_t)weaponConfig + oxorany((uintptr_t)0x60)), &recoilConfig) && IsValidObj(recoilConfig)) {
-                                        Vec2 zero = {0, 0};
-                                        SafeWrite((void*)((uintptr_t)recoilConfig + oxorany((uintptr_t)0x18)), &zero, 8); 
-                                        SafeWrite((void*)((uintptr_t)recoilConfig + oxorany((uintptr_t)0x20)), &zero, 8); 
-                                    }
+                                    if (FastRead((void*)((uintptr_t)weaponConfig + oxorany((uintptr_t)0x60)), &recoilConfig) && IsValidObj(recoilConfig)) { Vec2 zero = {0, 0}; SafeWrite((void*)((uintptr_t)recoilConfig + oxorany((uintptr_t)0x18)), &zero, 8); SafeWrite((void*)((uintptr_t)recoilConfig + oxorany((uintptr_t)0x20)), &zero, 8); }
                                     void* dispConfig = nullptr;
-                                    if (FastRead((void*)((uintptr_t)weaponConfig + oxorany((uintptr_t)0x58)), &dispConfig) && IsValidObj(dispConfig)) {
-                                        float zeroF = 0.0f;
-                                        SafeWrite((void*)((uintptr_t)dispConfig + oxorany((uintptr_t)0x18)), &zeroF, 4);
-                                        SafeWrite((void*)((uintptr_t)dispConfig + oxorany((uintptr_t)0x1C)), &zeroF, 4);
-                                        SafeWrite((void*)((uintptr_t)dispConfig + oxorany((uintptr_t)0x20)), &zeroF, 4);
-                                        SafeWrite((void*)((uintptr_t)dispConfig + oxorany((uintptr_t)0x24)), &zeroF, 4);
-                                        SafeWrite((void*)((uintptr_t)dispConfig + oxorany((uintptr_t)0x28)), &zeroF, 4);
-                                    }
+                                    if (FastRead((void*)((uintptr_t)weaponConfig + oxorany((uintptr_t)0x58)), &dispConfig) && IsValidObj(dispConfig)) { float zeroF = 0.0f; SafeWrite((void*)((uintptr_t)dispConfig + oxorany((uintptr_t)0x18)), &zeroF, 4); SafeWrite((void*)((uintptr_t)dispConfig + oxorany((uintptr_t)0x1C)), &zeroF, 4); SafeWrite((void*)((uintptr_t)dispConfig + oxorany((uintptr_t)0x20)), &zeroF, 4); SafeWrite((void*)((uintptr_t)dispConfig + oxorany((uintptr_t)0x24)), &zeroF, 4); SafeWrite((void*)((uintptr_t)dispConfig + oxorany((uintptr_t)0x28)), &zeroF, 4); }
                                 }
                             }
                             if (IsValidObj(hitscanAnimator)) {
@@ -570,7 +508,6 @@ void MainThreadUpdate() {
     }
 
     if (!IsSafeToRead(g_CCamTr, g_CCamTrN, g_CCamTrK) || !IsValidPtr(g_CNatCam)) { UpdCam(); if (!IsSafeToRead(g_CCamTr, g_CCamTrN, g_CCamTrK) || !IsValidPtr(g_CNatCam)) return; }
-
     Mat4x4 vM; if (!FastRead((void*)((uintptr_t)g_CNatCam + OFF_MAT_VIEW), &vM)) { g_CNatCam = nullptr; return; } g_vM = vM;
     if (IsValidPtr(g_PInputObj)) { bool isAiming = false; FastRead((void*)((uintptr_t)g_PInputObj + OFF_IS_AIMING), &isAiming); g_IsScoped = isAiming; } else g_IsScoped = false;
     
@@ -594,10 +531,7 @@ void MainThreadUpdate() {
         if (cfg_tree_enable || cfg_auto_farm) { std::lock_guard<std::mutex> lk(g_TMtx); for (int i = 0; i < g_TCount; i++) { if (cfg_farm_tree) { float distSq = cP.DistSq(g_TCache[i].p); if (distSq < minTargetDistSq) { minTargetDistSq = distSq; bestTargetPos = g_TCache[i].p; bestTargetValid = true; bestTargetIsNarrow = true; } } } }
     }
 
-    int vE = 0; 
-    Vec3 bT = {0,0,0}; float bFD = 9999.0f; 
-    Vec3 bT_MB = {0,0,0}; float bFD_MB = 9999.0f;
-    void* lML = nullptr;
+    int vE = 0; Vec3 bT = {0,0,0}; float bFD = 9999.0f; Vec3 bT_MB = {0,0,0}; float bFD_MB = 9999.0f; void* lML = nullptr;
     
     { 
         std::lock_guard<std::mutex> lk(g_PlMtx);
@@ -608,16 +542,12 @@ void MainThreadUpdate() {
             if (diSq > 250000.0f || diSq < 0.01f) continue;
             g_PlCache[i].di = sqrtf(diSq);
             
-            if (g_PlCache[i].di < 4.0f) { 
-                FastRead((void*)((uintptr_t)g_PlCache[i].pm + OFF_MOUSE_LOOK), &lML); 
-                g_LocalPlayerManager = g_PlCache[i].pm;
-                continue; 
-            } 
+            if (g_PlCache[i].di < 4.0f) { FastRead((void*)((uintptr_t)g_PlCache[i].pm + OFF_MOUSE_LOOK), &lML); g_LocalPlayerManager = g_PlCache[i].pm; continue; } 
             
             g_PlCache[i].validForESP = true;
-
             if (g_FCnt % 5 == 0) { if (g_PlCache[i].lastPos.x != 0 || g_PlCache[i].lastPos.z != 0) { Vec3 delta = { rP.x - g_PlCache[i].lastPos.x, 0.0f, rP.z - g_PlCache[i].lastPos.z }; float mDistSq = delta.x*delta.x + delta.z*delta.z; if (mDistSq > 0.0025f) { float mDist = sqrtf(mDistSq); g_PlCache[i].dir = {delta.x / mDist, 0.0f, delta.z / mDist}; } else g_PlCache[i].dir = {0.0f, 0.0f, 0.0f}; } g_PlCache[i].lastPos = rP; }
 
+            // БЕРЕМ ЧИСТЫЙ BONE 10 (ДЛЯ МАГИИ И АИМА) - НИКАКОЙ ДОП. МАТЕМАТИКИ!
             Vec3 hP = rP, bP = rP; bool hB = false;
             if (g_PlCache[i].hb && IsSafeToRead(g_PlCache[i].hb, g_PlCache[i].hbn, g_PlCache[i].hbk)) { hP = gp(g_PlCache[i].hb, nullptr); hB = true; }
             if (!hB) hP.y += 1.8f; 
@@ -637,7 +567,8 @@ void MainThreadUpdate() {
             if (needAim && cfg_aim_bone == 1 && g_PlCache[i].bb && IsSafeToRead(g_PlCache[i].bb, g_PlCache[i].bbn, g_PlCache[i].bbk)) bP = gp(g_PlCache[i].bb, nullptr);
 
             if (needAim) { 
-                Vec3 aP = (cfg_aim_bone == 0) ? hP : bP; 
+                Vec3 aP = (cfg_aim_bone == 0) ? hP : bP; // Чистая кость
+                
                 float current_predict = 0.12f * cfg_aim_smooth;
                 Vec3 pP = aP; pP.x += g_PlCache[i].dir.x * current_predict; pP.z += g_PlCache[i].dir.z * current_predict; 
                 
@@ -653,7 +584,7 @@ void MainThreadUpdate() {
             bool needMB = (cfg_magic_bullet && !g_PlCache[i].iT && !g_PlCache[i].iF && !cfg_auto_farm && g_PlCache[i].di <= cfg_aim_max_dist);
             if (needMB && cfg_aim_vis_check && !isVis) needMB = false;
             if (needMB) {
-                Vec3 aP = (cfg_aim_bone == 0) ? hP : bP; 
+                Vec3 aP = (cfg_aim_bone == 0) ? hP : bP; // Чистая кость
                 Vec3 wA;
                 if (W2S(aP, wA, vM, g_ScreenW, g_ScreenH)) {
                     float fD = GetFDist(wA.x, wA.y);
@@ -663,48 +594,75 @@ void MainThreadUpdate() {
         }
     }
     g_VisibleEnemies = vE;
-    g_MB_HasTarget = (bFD_MB < 9999.0f);
-    if (g_MB_HasTarget) g_MB_TargetPos = bT_MB;
+    g_MB_HasTarget = (bFD_MB < 9999.0f); if (g_MB_HasTarget) g_MB_TargetPos = bT_MB;
 
+    // ======================================================================================
+    // ИНЖЕКТ АИМБОТА И ФАРМ-БОТА В ВИДЕ "ФЕЙКОВЫХ СВАЙПОВ" (БЕЗ ЗАПИСИ НАПРЯМУЮ В КАМЕРУ)
+    // ======================================================================================
     if (cfg_auto_farm && IsValidPtr(lML)) {
         if (bestTargetValid) { 
+            Vec2 tA = CalcAng(cP, bestTargetPos); void* aPt = (void*)((uintptr_t)lML + OFF_ANGLES); Vec2 cA; 
+            if (FastRead(aPt, &cA) && !isnan(cA.x) && !isnan(cA.y)) {
+                float delta_pitch = tA.x - cA.x; float delta_yaw = tA.y - cA.y;
+                while (delta_yaw > 180.0f) delta_yaw -= 360.0f; while (delta_yaw < -180.0f) delta_yaw += 360.0f;
+                
+                void* osMouseClass = nullptr;
+                if (FastRead((void*)(g_Il2CppBase_RXP + RVA_ON_SCREEN_MOUSE_TYPEINFO), &osMouseClass) && IsValidPtr(osMouseClass)) {
+                    void* staticFields = nullptr;
+                    if (FastRead((void*)((uintptr_t)osMouseClass + 0xB8), &staticFields) && IsValidPtr(staticFields)) {
+                        Vec2 swipe = {0, 0};
+                        if (FastRead((void*)((uintptr_t)staticFields + 0x0), &swipe)) {
+                            swipe.x += (delta_yaw * 40.0f);
+                            swipe.y += (-delta_pitch * 40.0f);
+                            SafeWrite((void*)((uintptr_t)staticFields + 0x0), &swipe, sizeof(Vec2));
+                        }
+                    }
+                }
+            }
             float requiredDist = bestTargetIsNarrow ? 1.8f : 2.5f; 
             if (minTargetDistSq > requiredDist * requiredDist) { farm_sprint = true; farm_attack = false; farm_crouch = false; } 
             else { farm_sprint = false; farm_attack = true; farm_crouch = true; } 
         } else { farm_sprint = false; farm_attack = false; farm_crouch = false; }
-    } else { farm_sprint = false; farm_attack = false; farm_crouch = false; }
-
-    bool has_target_for_input = false;
-    Vec3 inputTargetPos = {0,0,0};
-
-    if (cfg_auto_farm && bestTargetValid) {
-        inputTargetPos = bestTargetPos; has_target_for_input = true;
-    } else if (cfg_aim_enable && bFD < 9999.0f) {
-        inputTargetPos = bT; has_target_for_input = true;
+    } 
+    else { 
+        farm_sprint = false; farm_attack = false; farm_crouch = false; 
+        if (cfg_aim_enable && IsValidPtr(lML) && bFD < 9999.0f) { 
+            void* aPt = (void*)((uintptr_t)lML + OFF_ANGLES); Vec2 cA; 
+            if (FastRead(aPt, &cA) && !isnan(cA.x) && !isnan(cA.y)) { 
+                Vec2 tA = CalcAng(cP, bT); 
+                
+                float delta_pitch = tA.x - cA.x;
+                float delta_yaw = tA.y - cA.y;
+                while (delta_yaw > 180.0f) delta_yaw -= 360.0f;
+                while (delta_yaw < -180.0f) delta_yaw += 360.0f;
+                
+                // 🔥 ТАЙНЫЙ АИМБОТ: ОТПРАВЛЯЕМ СВАЙПЫ ПО ЭКРАНУ (ЧЕРЕЗ TYPEINFO) 🔥
+                void* osMouseClass = nullptr;
+                if (FastRead((void*)(g_Il2CppBase_RXP + RVA_ON_SCREEN_MOUSE_TYPEINFO), &osMouseClass) && IsValidPtr(osMouseClass)) {
+                    void* staticFields = nullptr;
+                    // 0xB8 - стандартный оффсет для указателя static_fields в 64-битном IL2CPP
+                    if (FastRead((void*)((uintptr_t)osMouseClass + 0xB8), &staticFields) && IsValidPtr(staticFields)) {
+                        float speedMultiplier = 60.0f / cfg_aim_smooth; 
+                        Vec2 swipe = {0, 0};
+                        
+                        // 0x0 - оффсет поля Delta (как было указано в твоем дампе: "public static Vector2 Delta; // 0x0")
+                        if (FastRead((void*)((uintptr_t)staticFields + 0x0), &swipe)) {
+                            swipe.x += (delta_yaw * speedMultiplier);
+                            swipe.y += (-delta_pitch * speedMultiplier); // Инвертируем Y для правильного направления
+                            SafeWrite((void*)((uintptr_t)staticFields + 0x0), &swipe, sizeof(Vec2));
+                        }
+                    }
+                }
+            } 
+        } 
     }
-
-    if (has_target_for_input && IsValidPtr(lML)) {
-        void* aPt = (void*)((uintptr_t)lML + OFF_ANGLES); 
-        Vec2 cA; 
-        if (FastRead(aPt, &cA) && !isnan(cA.x) && !isnan(cA.y)) { 
-            Vec2 tA = CalcAng(cP, inputTargetPos); 
-            float delta_pitch = tA.x - cA.x;
-            float delta_yaw = tA.y - cA.y;
-            
-            while (delta_yaw > 180.0f) delta_yaw -= 360.0f;
-            while (delta_yaw < -180.0f) delta_yaw += 360.0f;
-            
-            g_AimTargetDelta.x = delta_yaw;
-            g_AimTargetDelta.y = delta_pitch;
-            g_HasAimTarget = true;
-        } else { g_HasAimTarget = false; }
-    } else { g_HasAimTarget = false; }
 }
 
-void hk_Update(void* instance, void* method) {
+void (*orig_Update)(void*);
+void hk_Update(void* instance) {
     g_RenderCount++;
     MainThreadUpdate();
-    if (orig_Update) orig_Update(instance, method);
+    if (orig_Update) orig_Update(instance);
 }
 
 void FreezeThread() {
@@ -726,6 +684,7 @@ void FreezeThread() {
 void r_thread() {
     g_Pid = getpid(); while (!g_SurfaceReady) std::this_thread::sleep_for(std::chrono::milliseconds(100));
     JNIEnv* e; if (g_JVM->AttachCurrentThread(&e, NULL) != JNI_OK) return; 
+    
     jclass svC=e->FindClass(oxorany("android/view/SurfaceView")); jobject h=e->CallObjectMethod(g_SurfaceView,e->GetMethodID(svC,oxorany("getHolder"),oxorany("()Landroid/view/SurfaceHolder;"))); jclass hC=e->FindClass(oxorany("android/view/SurfaceHolder")); jmethodID gs=e->GetMethodID(hC,oxorany("getSurface"),oxorany("()Landroid/view/Surface;")); jclass sC=e->FindClass(oxorany("android/view/Surface")); jmethodID iv=e->GetMethodID(sC,oxorany("isValid"),oxorany("()Z"));
     
     while (true) {
@@ -748,23 +707,14 @@ void r_thread() {
 
 void m_thread() { 
     g_Pid = getpid(); 
+    while(!g_Il2CppBase_RXP) { 
+        g_Il2CppBase_RXP = get_lib_rxp(oxorany("libil2cpp.so")); 
+        std::this_thread::sleep_for(std::chrono::seconds(1)); 
+    } 
+    std::this_thread::sleep_for(std::chrono::seconds(3)); 
 
-    // Стираем следы трояна БЕЗОПАСНО, после того как игра его полностью загрузила
-    std::this_thread::sleep_for(std::chrono::seconds(1));
-    Dl_info info;
-    if (dladdr((void*)m_thread, &info)) {
-        uintptr_t base = (uintptr_t)info.dli_fbase; size_t page_size = sysconf(_SC_PAGESIZE);
-        if (mprotect((void*)base, page_size, PROT_READ | PROT_WRITE) == 0) { *(uint32_t*)base = 0x00000000; mprotect((void*)base, page_size, PROT_READ | PROT_EXEC); }
-    }
-
-    while(!g_Il2CppBase_RXP) { g_Il2CppBase_RXP = get_lib_rxp(oxorany("libil2cpp.so")); std::this_thread::sleep_for(std::chrono::seconds(1)); } 
-    std::this_thread::sleep_for(std::chrono::seconds(2)); 
-
-    // Инлайн хуки (Dobby) с ИДЕАЛЬНОЙ СИГНАТУРОЙ!
     DobbyHook((void*)(g_Il2CppBase_RXP + RVA_UPDATE), (void*)hk_Update, (void**)&orig_Update);
     DobbyHook((void*)(g_Il2CppBase_RXP + RVA_RAYCAST), (void*)hk_Raycast, (void**)&orig_Raycast);
-    DobbyHook((void*)(g_Il2CppBase_RXP + RVA_GET_AXIS), (void*)hk_GetAxis, (void**)&orig_GetAxis);
-    DobbyHook((void*)(g_Il2CppBase_RXP + RVA_GET_AXIS_RAW), (void*)hk_GetAxisRaw, (void**)&orig_GetAxisRaw);
     
     std::thread(c_thread).detach(); 
     std::thread(r_thread).detach(); 
@@ -772,11 +722,23 @@ void m_thread() {
 }
 
 // =====================================================================
-// 🔥 ТОЧКА ВХОДА ТРОЯНСКОГО КОНЯ 🔥
+// 🔥 ТОЧКА ВХОДА (Вызывается самой игрой при распаковке) 🔥
 // =====================================================================
 EXPORT void JNICALL Java_com_ng_application_NGApplication_NG_1attachBaseContext(JNIEnv *env, jobject thiz, jobject context) {
     LOGI("[+] Fake NG_attachBaseContext executed! Hijacking the process...");
+    
     env->GetJavaVM(&g_JVM); 
+    
+    Dl_info info;
+    if (dladdr((void*)m_thread, &info)) {
+        uintptr_t base = (uintptr_t)info.dli_fbase;
+        size_t page_size = sysconf(_SC_PAGESIZE);
+        if (mprotect((void*)base, page_size, PROT_READ | PROT_WRITE) == 0) {
+            *(uint32_t*)base = 0x00000000; 
+            mprotect((void*)base, page_size, PROT_READ | PROT_EXEC);
+        }
+    }
+    
     std::thread(m_thread).detach();
 }
 
