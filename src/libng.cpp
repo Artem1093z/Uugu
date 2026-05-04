@@ -32,6 +32,7 @@
 #include <dlfcn.h>
 #include <sys/mman.h>
 
+// Подключаем Dobby для инлайн-хуков
 #include <dobby.h>
 
 #define LOG_TAG "Manes_TrojanNG"
@@ -41,7 +42,7 @@
 #define EXPORT extern "C" __attribute__((visibility("default")))
 
 // =====================================================================
-// 🔥 СТРУКТУРЫ ЭМУЛЯТОРА АНТИЧИТА (libng.so bypass) 🔥
+// 🔥 СТРУКТУРЫ ЭМУЛЯТОРА АНТИЧИТА 🔥
 // =====================================================================
 struct Il2CppStringKey { uint64_t meta; uint64_t size; char *data; };
 struct InternalCallNode { InternalCallNode *left; InternalCallNode *right; InternalCallNode *parent; uint64_t flags; Il2CppStringKey name; uint64_t method; };
@@ -187,11 +188,9 @@ void* g_LocalPlayerManager = nullptr;
 
 // ======================== ОФФСЕТЫ ========================
 #define RVA_UPDATE oxorany((uintptr_t)0x9032A18) 
-#define RVA_RAYCAST oxorany((uintptr_t)0x9D8D9B4) 
-
-// НОВЫЕ ОФФСЕТЫ ДЛЯ АППАРАТНОГО АИМА (ЭМУЛЯЦИИ КАСАНИЙ)
-#define RVA_GET_TOUCH oxorany((uintptr_t)0x9D5F0A8)      // GetTouch_Injected
-#define RVA_GET_MOUSEPOS oxorany((uintptr_t)0x9D5F4B8)   // get_mousePosition_Injected
+#define RVA_RAYCAST oxorany((uintptr_t)0x9D8D9B4) // ПРАВИЛЬНАЯ C# ОБЕРТКА
+#define RVA_GET_AXIS oxorany((uintptr_t)0x9D5E788) // НОВЫЙ INPUT HOOK
+#define RVA_GET_AXIS_RAW oxorany((uintptr_t)0x9D5E8F8) // НОВЫЙ INPUT HOOK
 
 #define RVA_GET_CAM_COUNT oxorany((uintptr_t)0x9C56068)
 #define RVA_GET_MAIN_CAM oxorany((uintptr_t)0x9C54E38)
@@ -202,6 +201,7 @@ void* g_LocalPlayerManager = nullptr;
 #define RVA_GET_TYPE oxorany((uintptr_t)0xA314D94)
 #define RVA_GET_BONE oxorany((uintptr_t)0x9C2C3B4)
 #define RVA_GET_NAME oxorany((uintptr_t)0x9CDDE54)
+#define RVA_INPUT_MOUSEPOS oxorany((uintptr_t)0x9D5E30C)
 #define RVA_INPUT_MOUSEBTN oxorany((uintptr_t)0x9D5E2E8)
 #define RVA_LINECAST oxorany((uintptr_t)0x9D862C0) 
 #define RVA_SET_FPS oxorany((uintptr_t)0x9C4A8F8)
@@ -271,82 +271,25 @@ typedef void*(*g_name_t)(void* o, void* m); typedef Vec3(*g_mpos_t)(void* m); ty
 typedef bool(*physics_linecast_t)(Vec3 start, Vec3 end, int layerMask, void* method);
 typedef void(*set_fps_t)(int);
 
-// ========================================================================
-// 🔥 ИДЕАЛЬНЫЙ АППАРАТНЫЙ АИМБОТ (СИМУЛЯЦИЯ TOUCH И MOUSEPOS) 🔥
-// ========================================================================
-
-bool g_IsAimbotWorking = false;
-Vec2 g_LastCameraDelta = {0, 0};
-
-// Структура касания Unity (прямо из дампа!)
-struct UnityTouch {
-    int fingerId;           // 0x0
-    Vec2 position;          // 0x4
-    Vec2 rawPosition;       // 0xC
-    Vec2 deltaPosition;     // 0x14
-    float deltaTime;        // 0x1C
-    int tapCount;           // 0x20
-    int phase;              // 0x24
-    int type;               // 0x28
-    float pressure;         // 0x2C
-    float maxPressure;      // 0x30
-    float radius;           // 0x34
-    float radiusVariance;   // 0x38
-    float altitudeAngle;    // 0x3C
-    float azimuthAngle;     // 0x40
-};
-
-// 1. ХУК ДЛЯ КАСАНИЙ ЭКРАНА (Телефоны)
-void (*orig_GetTouch_Injected)(int index, UnityTouch* ret);
-void hk_GetTouch_Injected(int index, UnityTouch* ret) {
-    orig_GetTouch_Injected(index, ret);
-    
-    // Если мы наводимся на цель — перехватываем пальцы игрока
-    if (g_IsAimbotWorking) {
-        // Проверяем, что палец двигается или зажат, и он находится на правой половине экрана (джойстик обзора)
-        if ((ret->phase == 1 || ret->phase == 2) && ret->position.x > (g_ScreenW / 2.0f)) {
-            
-            // Чувствительность симуляции. Переводим градусы в пиксели свайпа.
-            float SWIPE_SENSITIVITY = 50.0f;
-            
-            // Записываем наш фейковый свайп. Игра считает его реальным пальцем!
-            ret->deltaPosition.x += g_LastCameraDelta.y * SWIPE_SENSITIVITY; 
-            ret->deltaPosition.y -= g_LastCameraDelta.x * SWIPE_SENSITIVITY; // Y инвертирован в Unity
-            
-            // Жестко ставим статус касания "В движении" (Moved = 1)
-            ret->phase = 1;
-        }
-    }
-}
-
-// 2. ХУК ДЛЯ МЫШИ (На случай, если античит палит эмуляторы)
-void (*orig_get_mousePosition)(Vec3* ret);
-void hk_get_mousePosition(Vec3* ret) {
-    orig_get_mousePosition(ret);
-    
-    if (g_IsAimbotWorking) {
-        float SWIPE_SENSITIVITY = 50.0f;
-        ret->x += g_LastCameraDelta.y * SWIPE_SENSITIVITY;
-        ret->y -= g_LastCameraDelta.x * SWIPE_SENSITIVITY;
-    }
-}
-
-// ======================== MAGIC BULLET (DOBBY INLINE HOOK) ========================
+// ======================== MAGIC BULLET & INPUT AIMBOT (DOBBY HOOKS) ========================
 
 using Ray = struct { Vec3 m_orig; Vec3 m_dir; };
 using RaycastHit = struct { Vec3 m_point; Vec3 m_normal; uint32_t m_face; float m_distance; float m_uv[2]; int m_collider; };
 using InternalRaycastFn = bool(*)(void* scene, Ray* ray, float distance, RaycastHit* hit, int layer, int query);
+typedef float(*get_axis_t)(void* axisName);
 
 InternalRaycastFn orig_Raycast = nullptr;
-std::atomic<int> g_RaycastCallCount(0);
+get_axis_t orig_GetAxis = nullptr;
+get_axis_t orig_GetAxisRaw = nullptr;
 
 bool g_MB_HasTarget = false;
 Vec3 g_MB_TargetPos = {0,0,0};
 void* g_PInputObj = nullptr;
 
+bool g_HasAimTarget = false;
+Vec2 g_AimTargetDelta = {0, 0};
+
 bool hk_Raycast(void* scene, Ray* ray, float distance, RaycastHit* hit, int layer, int query) {
-    g_RaycastCallCount++;
-    
     extern bool cfg_magic_bullet;
     if (cfg_magic_bullet && g_MB_HasTarget && distance > 50.0f) {
         bool isShooting = false;
@@ -359,6 +302,43 @@ bool hk_Raycast(void* scene, Ray* ray, float distance, RaycastHit* hit, int laye
         }
     }
     return orig_Raycast(scene, ray, distance, hit, layer, query);
+}
+
+// УНИВЕРСАЛЬНЫЙ СИМУЛЯТОР МЫШИ ДЛЯ AIMBOT И AUTOFARM (БЕЗ PITCH/YAW)
+float process_axis_hook(void* axisName, float original_value) {
+    extern bool cfg_aim_enable;
+    extern bool cfg_auto_farm;
+    extern float cfg_aim_smooth;
+
+    if (!(cfg_aim_enable || cfg_auto_farm) || !g_HasAimTarget || !IsValidPtr(axisName)) return original_value;
+    
+    int32_t len = *(int32_t*)((uintptr_t)axisName + 0x10);
+    if (len == 7) {
+        char16_t* chars = (char16_t*)((uintptr_t)axisName + 0x14);
+        if (chars[0] == u'M') { // Проверяем на "Mouse X" или "Mouse Y"
+            if (chars[6] == u'X') {
+                float step = g_AimTargetDelta.x * (0.15f / cfg_aim_smooth);
+                if (step > 6.0f) step = 6.0f; // Ограничение резкости (6 = быстрый флик)
+                if (step < -6.0f) step = -6.0f;
+                return original_value + step;
+            } else if (chars[6] == u'Y') {
+                // В Unity движение мыши вверх (положительный Y) опускает pitch (поворот камеры вверх).
+                float step = -g_AimTargetDelta.y * (0.15f / cfg_aim_smooth);
+                if (step > 6.0f) step = 6.0f;
+                if (step < -6.0f) step = -6.0f;
+                return original_value + step;
+            }
+        }
+    }
+    return original_value;
+}
+
+float hk_GetAxis(void* axisName) {
+    return process_axis_hook(axisName, orig_GetAxis(axisName));
+}
+
+float hk_GetAxisRaw(void* axisName) {
+    return process_axis_hook(axisName, orig_GetAxisRaw(axisName));
 }
 
 // AUTH GLOBALS
@@ -434,7 +414,7 @@ void DrawMenu() {
     const char* tb[]={"Visuals","Aim","Magic","Misc"}; ImGui::SetCursorPos(ImVec2(0,220*g_MenuScale)); ImGui::BeginChild("T",ImVec2(220*g_MenuScale,s.y-220*g_MenuScale),false,ImGuiWindowFlags_NoScrollbar); for(int i=0;i<4;i++){ImGui::SetCursorPosX(15*g_MenuScale); bool sel=(c_t==i); ImVec2 cp=ImGui::GetCursorScreenPos(); if(ImGui::InvisibleButton(tb[i],ImVec2(190*g_MenuScale,50*g_MenuScale)))c_t=i; float da=ImClamp(ImGui::GetIO().DeltaTime*14.0f,0.0f,1.0f); t_a[i]=ImLerp(t_a[i],sel?1.0f:0.0f,da); ImU32 bc=ImGui::ColorConvertFloat4ToU32(ImLerp(ImVec4(0,0,0,0),ImVec4(1,1,1,0.1f),t_a[i])); ImGui::GetWindowDrawList()->AddRectFilled(cp,ImVec2(cp.x+190*g_MenuScale,cp.y+50*g_MenuScale),bc,8.0f*g_MenuScale); if(t_a[i]>0.01f)ImGui::GetWindowDrawList()->AddRectFilled(cp,ImVec2(cp.x+4*g_MenuScale,cp.y+50*g_MenuScale),IM_COL32(255,255,255,(int)(255*t_a[i])),4.0f*g_MenuScale); ImU32 tc=ImGui::ColorConvertFloat4ToU32(ImLerp(ImVec4(0.5f,0.5f,0.5f,1.0f),ImVec4(1,1,1,1),t_a[i])); ImGui::GetWindowDrawList()->AddText(ImGui::GetFont(),22.0f*g_MenuScale,ImVec2(cp.x+20*g_MenuScale,cp.y+14*g_MenuScale),tc,tb[i]); ImGui::SetCursorPosY(ImGui::GetCursorPosY()+5*g_MenuScale);} ImGui::EndChild();
     ImGui::SetCursorPos(ImVec2(240*g_MenuScale,20*g_MenuScale)); ImGui::BeginChild("C",ImVec2(s.x-260*g_MenuScale,s.y-40*g_MenuScale),false,ImGuiWindowFlags_NoScrollbar); ImGuiWindow* w=ImGui::GetCurrentWindow(); bool ih=ImGui::IsMouseHoveringRect(w->Pos,ImVec2(w->Pos.x+w->Size.x,w->Pos.y+w->Size.y)); static ImVec2 dsp; static float ssy; static bool ita=false; if(ih&&ImGui::IsMouseClicked(0)){dsp=ImGui::GetIO().MousePos; ssy=w->Scroll.y; ita=true; g_IsScrolling=false;} if(ita){if(ImGui::IsMouseDown(0)){float dy=ImGui::GetIO().MousePos.y-dsp.y; if(std::abs(dy)>5.0f*g_MenuScale){g_IsScrolling=true; w->Scroll.y=ssy-dy;}}else{ita=false; g_IsScrolling=false;}} if(w->Scroll.y<0.0f)w->Scroll.y=0.0f; if(w->Scroll.y>w->ScrollMax.y)w->Scroll.y=w->ScrollMax.y; if(ih&&ImGui::GetIO().MouseWheel!=0.0f)w->Scroll.y-=ImGui::GetIO().MouseWheel*30.0f*g_MenuScale; d->AddText(ImGui::GetFont(),32.0f*g_MenuScale,ImGui::GetCursorScreenPos(),IM_COL32(255,255,255,255),tb[c_t]); ImGui::Dummy(ImVec2(0,40*g_MenuScale));
     if(c_t==0){ DPanel("Enable ESP","On/Off",&cfg_esp_enable); DPanel("Box","Draw Box",&cfg_esp_box); DPanel("Line","Draw Line",&cfg_esp_line); DPanel("Name","Draw Name",&cfg_esp_name); DPanel("Clan","Draw Clan",&cfg_esp_clan); DPanel("Distance","Draw Distance",&cfg_esp_dist); DPanel("Count","Draw Count",&cfg_esp_count); DPanel("Lootboxes","Draw Lootboxes",&cfg_loot_enable); DPanel("Pickups","Draw Pickups",&cfg_pickup_enable); DPanel("Ore","Draw Ore",&cfg_ore_enable); DPanel("Trees","Draw Trees",&cfg_tree_enable); DPanel("Scrap","Draw Scrap",&cfg_scrap_enable); DPanel("Cupboard","Draw Cupboard",&cfg_cupboard_enable); DPanel("Sleepers","Draw sleeping players",&cfg_sleeper_enable); }
-    else if(c_t==1){ DPanel("Enable Hardware Aim","Legit aimbot",&cfg_aim_enable); DPanel("Vis Check","Aim at visible only",&cfg_aim_vis_check); DPanel("Scope Only","Check Scope",&cfg_aim_scope_only); DSlider("Smooth", "Aim smoothing", &cfg_aim_smooth, 1.5f, 5.0f, "%.1f"); DSlider("Max Dist","Aim distance limit",&cfg_aim_max_dist,50.0f,300.0f,"%.0f m"); DPanel("FOV Circle","Draw FOV",&cfg_aim_draw_fov); DSlider("FOV Size","Circle Size",&cfg_aim_fov,10.0f,360.0f,"%.0f px"); }
+    else if(c_t==1){ DPanel("Enable Aim","Auto aim",&cfg_aim_enable); DPanel("Vis Check","Aim at visible only",&cfg_aim_vis_check); DPanel("Scope Only","Check Scope",&cfg_aim_scope_only); DSlider("Smooth", "Aim smoothing", &cfg_aim_smooth, 1.5f, 2.0f, "%.1f"); DSlider("Max Dist","Aim distance limit",&cfg_aim_max_dist,50.0f,300.0f,"%.0f m"); DPanel("FOV Circle","Draw FOV",&cfg_aim_draw_fov); DSlider("FOV Size","Circle Size",&cfg_aim_fov,10.0f,360.0f,"%.0f px"); }
     else if(c_t==2){ DPanel("Magic Bullet","Silent Aim", &cfg_magic_bullet); DPanel("MB FOV Circle","Red Circle", &cfg_mb_draw_fov); DPanel("MB Target Line","Red line to target", &cfg_mb_draw_line); DSlider("MB FOV Size", "Magic Bullet FOV", &cfg_mb_fov, 10.0f, 360.0f, "%.0f px"); ImGui::Dummy(ImVec2(0, 10*g_MenuScale)); DPanel("No Recoil & Spread","Remove weapon recoil/spread",&cfg_no_recoil); DPanel("Fast Reload","Instant reload",&cfg_fast_reload); DPanel("Rapid Fire","Shoot very fast",&cfg_fast_shoot); ImGui::Dummy(ImVec2(0, 10*g_MenuScale)); DPanel("Fast Heal","Auto medkit",&cfg_fast_heal); DPanel("Auto Farm", "Enable Auto Farm", &cfg_auto_farm); DPanel(" > Farm Stone", "Target Stone", &cfg_farm_stone); DPanel(" > Farm Ferum", "Target Ferum", &cfg_farm_ferum); DPanel(" > Farm Sulfur", "Target Sulfur", &cfg_farm_sulfur); DPanel(" > Farm Scrap", "Target Scrap", &cfg_farm_scrap); DPanel(" > Farm Tree", "Target Trees", &cfg_farm_tree); }
     else if(c_t==3){ DPanel("Unlock FPS", "t.me/ManesWare", &cfg_unlock_fps); DPanel("Enable XRAY", "See through walls", &cfg_xray_enable); if (cfg_xray_enable) { DSlider("X-ray distance", "X-ray distance", &cfg_xray_dist, 2.0f, 20.0f, "%.2f"); } ImGui::Dummy(ImVec2(0, 10*g_MenuScale)); if(DSlider("Menu Scale","Scale UI",&g_TempMenuScale,0.5f,2.0f,"%.2f"))g_LastScaleEditTime=ImGui::GetTime(); ImGui::Dummy(ImVec2(0,20*g_MenuScale)); 
         extern volatile int g_RenderCount; static double last_fps_time = 0.0; static int last_render_count = 0; static int current_fps = 0;
@@ -532,11 +512,37 @@ void MainThreadUpdate() {
                             void* weaponConfig = nullptr; void* hitscanAnimator = nullptr;
                             FastRead((void*)((uintptr_t)currentWeapon + oxorany((uintptr_t)0x138)), &weaponConfig);
                             FastRead((void*)((uintptr_t)currentWeapon + oxorany((uintptr_t)0x1F0)), &hitscanAnimator);
+
                             if (IsValidObj(weaponConfig)) {
-                                if (cfg_fast_shoot) { float origFr = 0; if (FastRead((void*)((uintptr_t)weaponConfig + oxorany((uintptr_t)0x34)), &origFr)) { if (origFr < 5.0f && origFr > 0.001f) { float val = 0.02f; SafeWrite((void*)((uintptr_t)weaponConfig + oxorany((uintptr_t)0x34)), &val, 4); } else if (origFr >= 5.0f && origFr < 10000.0f) { float val = 4000.0f; SafeWrite((void*)((uintptr_t)weaponConfig + oxorany((uintptr_t)0x34)), &val, 4); } } }
-                                if (cfg_fast_reload) { float val = 0.05f; SafeWrite((void*)((uintptr_t)weaponConfig + oxorany((uintptr_t)0x48)), &val, 4); SafeWrite((void*)((uintptr_t)weaponConfig + oxorany((uintptr_t)0x4C)), &val, 4); }
-                                if (cfg_no_recoil) { void* recoilConfig = nullptr; if (FastRead((void*)((uintptr_t)weaponConfig + oxorany((uintptr_t)0x60)), &recoilConfig) && IsValidObj(recoilConfig)) { Vec2 zero = {0, 0}; SafeWrite((void*)((uintptr_t)recoilConfig + oxorany((uintptr_t)0x18)), &zero, 8); SafeWrite((void*)((uintptr_t)recoilConfig + oxorany((uintptr_t)0x20)), &zero, 8); }
-                                    void* dispConfig = nullptr; if (FastRead((void*)((uintptr_t)weaponConfig + oxorany((uintptr_t)0x58)), &dispConfig) && IsValidObj(dispConfig)) { float zeroF = 0.0f; SafeWrite((void*)((uintptr_t)dispConfig + oxorany((uintptr_t)0x18)), &zeroF, 4); SafeWrite((void*)((uintptr_t)dispConfig + oxorany((uintptr_t)0x1C)), &zeroF, 4); SafeWrite((void*)((uintptr_t)dispConfig + oxorany((uintptr_t)0x20)), &zeroF, 4); SafeWrite((void*)((uintptr_t)dispConfig + oxorany((uintptr_t)0x24)), &zeroF, 4); SafeWrite((void*)((uintptr_t)dispConfig + oxorany((uintptr_t)0x28)), &zeroF, 4); } }
+                                if (cfg_fast_shoot) {
+                                    float origFr = 0;
+                                    if (FastRead((void*)((uintptr_t)weaponConfig + oxorany((uintptr_t)0x34)), &origFr)) {
+                                        if (origFr < 5.0f && origFr > 0.001f) { float val = 0.02f; SafeWrite((void*)((uintptr_t)weaponConfig + oxorany((uintptr_t)0x34)), &val, 4); }
+                                        else if (origFr >= 5.0f && origFr < 10000.0f) { float val = 4000.0f; SafeWrite((void*)((uintptr_t)weaponConfig + oxorany((uintptr_t)0x34)), &val, 4); }
+                                    }
+                                }
+                                if (cfg_fast_reload) {
+                                    float val = 0.05f;
+                                    SafeWrite((void*)((uintptr_t)weaponConfig + oxorany((uintptr_t)0x48)), &val, 4); 
+                                    SafeWrite((void*)((uintptr_t)weaponConfig + oxorany((uintptr_t)0x4C)), &val, 4); 
+                                }
+                                if (cfg_no_recoil) {
+                                    void* recoilConfig = nullptr;
+                                    if (FastRead((void*)((uintptr_t)weaponConfig + oxorany((uintptr_t)0x60)), &recoilConfig) && IsValidObj(recoilConfig)) {
+                                        Vec2 zero = {0, 0};
+                                        SafeWrite((void*)((uintptr_t)recoilConfig + oxorany((uintptr_t)0x18)), &zero, 8); 
+                                        SafeWrite((void*)((uintptr_t)recoilConfig + oxorany((uintptr_t)0x20)), &zero, 8); 
+                                    }
+                                    void* dispConfig = nullptr;
+                                    if (FastRead((void*)((uintptr_t)weaponConfig + oxorany((uintptr_t)0x58)), &dispConfig) && IsValidObj(dispConfig)) {
+                                        float zeroF = 0.0f;
+                                        SafeWrite((void*)((uintptr_t)dispConfig + oxorany((uintptr_t)0x18)), &zeroF, 4);
+                                        SafeWrite((void*)((uintptr_t)dispConfig + oxorany((uintptr_t)0x1C)), &zeroF, 4);
+                                        SafeWrite((void*)((uintptr_t)dispConfig + oxorany((uintptr_t)0x20)), &zeroF, 4);
+                                        SafeWrite((void*)((uintptr_t)dispConfig + oxorany((uintptr_t)0x24)), &zeroF, 4);
+                                        SafeWrite((void*)((uintptr_t)dispConfig + oxorany((uintptr_t)0x28)), &zeroF, 4);
+                                    }
+                                }
                             }
                             if (IsValidObj(hitscanAnimator)) {
                                 if (cfg_fast_shoot) { bool customSpeed = true; float speedVal = 10.0f; SafeWrite((void*)((uintptr_t)hitscanAnimator + oxorany((uintptr_t)0x5C)), &customSpeed, 1); SafeWrite((void*)((uintptr_t)hitscanAnimator + oxorany((uintptr_t)0x60)), &speedVal, 4); }
@@ -576,12 +582,12 @@ void MainThreadUpdate() {
     if (g_FCnt % 120 == 90 && (cfg_scrap_enable || cfg_auto_farm)) UpdScrap(); 
     if (g_FCnt % 120 == 105 && cfg_cupboard_enable) UpdCupboard();
 
-    Vec3 bestTargetPos = {0, 0, 0}; float minTargetDistSq = 999999.0f; bool bestTargetValid = false; 
+    Vec3 bestTargetPos = {0, 0, 0}; float minTargetDistSq = 999999.0f; bool bestTargetValid = false, bestTargetIsNarrow = false; 
 
     if (cfg_auto_farm) {
-        if (cfg_ore_enable || cfg_auto_farm) { std::lock_guard<std::mutex> lk(g_OMtx); for (int i = 0; i < g_OCount; i++) { bool validTarget = (cfg_farm_stone && g_OCache[i].type == 1) || (cfg_farm_ferum && g_OCache[i].type == 2) || (cfg_farm_sulfur && g_OCache[i].type == 3); if (validTarget) { float distSq = cP.DistSq(g_OCache[i].p); if (distSq < minTargetDistSq) { minTargetDistSq = distSq; bestTargetPos = g_OCache[i].p; bestTargetValid = true; } } } }
-        if (cfg_scrap_enable || cfg_auto_farm) { std::lock_guard<std::mutex> lk(g_SMtx); for (int i = 0; i < g_SCount; i++) { if (cfg_farm_scrap) { float distSq = cP.DistSq(g_SCache[i].p); if (distSq < minTargetDistSq) { minTargetDistSq = distSq; bestTargetPos = g_SCache[i].p; bestTargetValid = true; } } } }
-        if (cfg_tree_enable || cfg_auto_farm) { std::lock_guard<std::mutex> lk(g_TMtx); for (int i = 0; i < g_TCount; i++) { if (cfg_farm_tree) { float distSq = cP.DistSq(g_TCache[i].p); if (distSq < minTargetDistSq) { minTargetDistSq = distSq; bestTargetPos = g_TCache[i].p; bestTargetValid = true; } } } }
+        if (cfg_ore_enable || cfg_auto_farm) { std::lock_guard<std::mutex> lk(g_OMtx); for (int i = 0; i < g_OCount; i++) { bool validTarget = (cfg_farm_stone && g_OCache[i].type == 1) || (cfg_farm_ferum && g_OCache[i].type == 2) || (cfg_farm_sulfur && g_OCache[i].type == 3); if (validTarget) { float distSq = cP.DistSq(g_OCache[i].p); if (distSq < minTargetDistSq) { minTargetDistSq = distSq; bestTargetPos = g_OCache[i].p; bestTargetValid = true; bestTargetIsNarrow = false; } } } }
+        if (cfg_scrap_enable || cfg_auto_farm) { std::lock_guard<std::mutex> lk(g_SMtx); for (int i = 0; i < g_SCount; i++) { if (cfg_farm_scrap) { float distSq = cP.DistSq(g_SCache[i].p); if (distSq < minTargetDistSq) { minTargetDistSq = distSq; bestTargetPos = g_SCache[i].p; bestTargetValid = true; bestTargetIsNarrow = true; } } } }
+        if (cfg_tree_enable || cfg_auto_farm) { std::lock_guard<std::mutex> lk(g_TMtx); for (int i = 0; i < g_TCount; i++) { if (cfg_farm_tree) { float distSq = cP.DistSq(g_TCache[i].p); if (distSq < minTargetDistSq) { minTargetDistSq = distSq; bestTargetPos = g_TCache[i].p; bestTargetValid = true; bestTargetIsNarrow = true; } } } }
     }
 
     int vE = 0; 
@@ -621,6 +627,7 @@ void MainThreadUpdate() {
             if (g_FCnt % 6 == i % 6) { if (g_PlCache[i].vH && g_PlCache[i].di <= cfg_aim_max_dist + 50.0f) { int mask = (1 << 0) | (1 << 12) | (1 << 15) | (1 << 17) | (1 << 19); isVis = !pLinecast(cP, hP, mask, nullptr); } else isVis = false; }
             g_PlCache[i].isVis = isVis; 
 
+            // LOGIC AIMBOT
             bool needAim = (cfg_aim_enable && !g_PlCache[i].iT && !g_PlCache[i].iF && !cfg_auto_farm && (!cfg_aim_scope_only || g_IsScoped) && g_PlCache[i].di <= cfg_aim_max_dist);
             if (needAim && cfg_aim_vis_check && !isVis) needAim = false;
             if (needAim && cfg_aim_bone == 1 && g_PlCache[i].bb && IsSafeToRead(g_PlCache[i].bb, g_PlCache[i].bbn, g_PlCache[i].bbk)) bP = gp(g_PlCache[i].bb, nullptr);
@@ -629,61 +636,77 @@ void MainThreadUpdate() {
                 Vec3 aP = (cfg_aim_bone == 0) ? hP : bP; 
                 float current_predict = 0.12f * cfg_aim_smooth;
                 Vec3 pP = aP; pP.x += g_PlCache[i].dir.x * current_predict; pP.z += g_PlCache[i].dir.z * current_predict; 
+                
                 Vec3 wA; 
-                if (W2S(pP, wA, vM, g_ScreenW, g_ScreenH)) { g_PlCache[i].wPred = wA; g_PlCache[i].vPred = true; float fD = GetFDist(wA.x, wA.y); if (fD < cfg_aim_fov && fD < bFD) { bFD = fD; bT = pP; } } 
+                if (W2S(pP, wA, vM, g_ScreenW, g_ScreenH)) { 
+                    g_PlCache[i].wPred = wA; g_PlCache[i].vPred = true; 
+                    float fD = GetFDist(wA.x, wA.y); 
+                    if (fD < cfg_aim_fov && fD < bFD) { bFD = fD; bT = pP; } 
+                } 
             }
             
+            // LOGIC MAGIC BULLET
             bool needMB = (cfg_magic_bullet && !g_PlCache[i].iT && !g_PlCache[i].iF && !cfg_auto_farm && g_PlCache[i].di <= cfg_aim_max_dist);
             if (needMB && cfg_aim_vis_check && !isVis) needMB = false;
-            
             if (needMB) {
                 Vec3 aP = (cfg_aim_bone == 0) ? hP : bP; 
-                Vec3 wA; if (W2S(aP, wA, vM, g_ScreenW, g_ScreenH)) { float fD = GetFDist(wA.x, wA.y); if (fD < cfg_mb_fov && fD < bFD_MB) { bFD_MB = fD; bT_MB = aP; } }
+                Vec3 wA;
+                if (W2S(aP, wA, vM, g_ScreenW, g_ScreenH)) {
+                    float fD = GetFDist(wA.x, wA.y);
+                    if (fD < cfg_mb_fov && fD < bFD_MB) { bFD_MB = fD; bT_MB = aP; }
+                }
             }
         }
     }
     g_VisibleEnemies = vE;
-    g_MB_HasTarget = (bFD_MB < 9999.0f); if (g_MB_HasTarget) g_MB_TargetPos = bT_MB;
+    g_MB_HasTarget = (bFD_MB < 9999.0f);
+    if (g_MB_HasTarget) g_MB_TargetPos = bT_MB;
 
-    // =========================================================================
-    // 🔥 РАСЧЕТ ДЕЛЬТЫ (ДЛЯ ЭМУЛЯЦИИ КАСАНИЙ - БЕЗ ЗАПИСИ В ПАМЯТЬ!) 🔥
-    // =========================================================================
-    bool isCurrentlyAiming = false;
-    
-    if (cfg_auto_farm && IsValidPtr(lML) && bestTargetValid) {
-        Vec2 cA; 
-        if (FastRead((void*)((uintptr_t)lML + OFF_ANGLES), &cA) && !isnan(cA.x) && !isnan(cA.y)) { 
-            Vec2 tA = CalcAng(cP, bestTargetPos);
-            float dx = tA.x - cA.x; float dy = tA.y - cA.y;
-            while (dy > 180.0f) dy -= 360.0f; while (dy < -180.0f) dy += 360.0f;
-            g_LastCameraDelta.x = dx; g_LastCameraDelta.y = dy;
-            isCurrentlyAiming = true;
-        }
-        if (minTargetDistSq > 6.25f) { farm_sprint = true; farm_attack = false; farm_crouch = false; } else { farm_sprint = false; farm_attack = true; farm_crouch = true; } 
+    // ОБНОВЛЕННАЯ ЛОГИКА ФАРМА (Мы больше не пишем углы в память, мы используем Input Simulator!)
+    if (cfg_auto_farm && IsValidPtr(lML)) {
+        if (bestTargetValid) { 
+            float requiredDist = bestTargetIsNarrow ? 1.8f : 2.5f; 
+            if (minTargetDistSq > requiredDist * requiredDist) { farm_sprint = true; farm_attack = false; farm_crouch = false; } 
+            else { farm_sprint = false; farm_attack = true; farm_crouch = true; } 
+        } else { farm_sprint = false; farm_attack = false; farm_crouch = false; }
     } else { farm_sprint = false; farm_attack = false; farm_crouch = false; }
 
-    if (!cfg_auto_farm || !bestTargetValid) { 
-        if (cfg_aim_enable && IsValidPtr(lML) && bFD < 9999.0f) { 
-            void* aPt = (void*)((uintptr_t)lML + OFF_ANGLES); 
-            Vec2 cA; 
-            if (FastRead(aPt, &cA) && !isnan(cA.x) && !isnan(cA.y)) { 
-                Vec2 tA = CalcAng(cP, bT); 
-                float delta_x = tA.x - cA.x; float delta_y = tA.y - cA.y;
-                while (delta_y > 180.0f) delta_y -= 360.0f; while (delta_y < -180.0f) delta_y += 360.0f;
-                
-                // Передаем углы в хук GetTouch. Никаких SafeWrite больше нет!
-                g_LastCameraDelta.x = delta_x / cfg_aim_smooth;
-                g_LastCameraDelta.y = delta_y / cfg_aim_smooth;
-                isCurrentlyAiming = true;
-            } 
-        }
+    bool has_target_for_input = false;
+    Vec3 inputTargetPos = {0,0,0};
+
+    if (cfg_auto_farm && bestTargetValid) {
+        inputTargetPos = bestTargetPos;
+        has_target_for_input = true;
+    } else if (cfg_aim_enable && bFD < 9999.0f) {
+        inputTargetPos = bT;
+        has_target_for_input = true;
     }
-    
-    g_IsAimbotWorking = isCurrentlyAiming;
+
+    if (has_target_for_input && IsValidPtr(lML)) {
+        void* aPt = (void*)((uintptr_t)lML + OFF_ANGLES); 
+        Vec2 cA; 
+        if (FastRead(aPt, &cA) && !isnan(cA.x) && !isnan(cA.y)) { 
+            Vec2 tA = CalcAng(cP, inputTargetPos); 
+            float delta_pitch = tA.x - cA.x;
+            float delta_yaw = tA.y - cA.y;
+            
+            while (delta_yaw > 180.0f) delta_yaw -= 360.0f;
+            while (delta_yaw < -180.0f) delta_yaw += 360.0f;
+            
+            // Запоминаем дельту для наших Dobby хуков на `Input.GetAxis`
+            g_AimTargetDelta.x = delta_yaw;
+            g_AimTargetDelta.y = delta_pitch;
+            g_HasAimTarget = true;
+        } else { g_HasAimTarget = false; }
+    } else { g_HasAimTarget = false; }
 }
 
 void (*orig_Update)(void*);
-void hk_Update(void* instance) { g_RenderCount++; MainThreadUpdate(); if (orig_Update) orig_Update(instance); }
+void hk_Update(void* instance) {
+    g_RenderCount++;
+    MainThreadUpdate();
+    if (orig_Update) orig_Update(instance);
+}
 
 void FreezeThread() {
     bool wS = false, wA = false, wC = false;
@@ -696,6 +719,7 @@ void FreezeThread() {
         if (nS) { *(bool*)(pInput + OFF_SPRINT) = true; *(float*)(pInput + OFF_SPRINT_FLOAT) = 1.0f; wS = true; } else if (wS) { *(bool*)(pInput + OFF_SPRINT) = false; *(float*)(pInput + OFF_SPRINT_FLOAT) = 0.0f; wS = false; }
         if (nA) { *(bool*)(pInput + OFF_SIGMA) = true; wA = true; } else if (wA) { *(bool*)(pInput + OFF_SIGMA) = false; wA = false; }
         if (nC) { *(bool*)(pInput + OFF_CROUCH) = true; wC = true; } else if (wC) { *(bool*)(pInput + OFF_CROUCH) = false; wC = false; }
+
         if (!nS && !nA && !nC) std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 }
@@ -704,6 +728,7 @@ void r_thread() {
     g_Pid = getpid(); while (!g_SurfaceReady) std::this_thread::sleep_for(std::chrono::milliseconds(100));
     JNIEnv* e; if (g_JVM->AttachCurrentThread(&e, NULL) != JNI_OK) return; 
     jclass svC=e->FindClass(oxorany("android/view/SurfaceView")); jobject h=e->CallObjectMethod(g_SurfaceView,e->GetMethodID(svC,oxorany("getHolder"),oxorany("()Landroid/view/SurfaceHolder;"))); jclass hC=e->FindClass(oxorany("android/view/SurfaceHolder")); jmethodID gs=e->GetMethodID(hC,oxorany("getSurface"),oxorany("()Landroid/view/Surface;")); jclass sC=e->FindClass(oxorany("android/view/Surface")); jmethodID iv=e->GetMethodID(sC,oxorany("isValid"),oxorany("()Z"));
+    
     while (true) {
         jobject s=nullptr; while(true){s=e->CallObjectMethod(h,gs); if(s){if(e->CallBooleanMethod(s,iv))break; e->DeleteLocalRef(s);} std::this_thread::sleep_for(std::chrono::milliseconds(200));}
         ANativeWindow* w=ANativeWindow_fromSurface(e,s); EGLDisplay d=eglGetDisplay(EGL_DEFAULT_DISPLAY); eglInitialize(d,0,0); EGLint a[]={EGL_SURFACE_TYPE,EGL_WINDOW_BIT,EGL_RENDERABLE_TYPE,EGL_OPENGL_ES3_BIT,EGL_BLUE_SIZE,8,EGL_GREEN_SIZE,8,EGL_RED_SIZE,8,EGL_ALPHA_SIZE,8,EGL_NONE}; EGLConfig c; EGLint nc; eglChooseConfig(d,a,&c,1,&nc); EGLint f; eglGetConfigAttrib(d,c,EGL_NATIVE_VISUAL_ID,&f); ANativeWindow_setBuffersGeometry(w,0,0,f); EGLSurface es=eglCreateWindowSurface(d,c,w,NULL); EGLint ca[]={EGL_CONTEXT_CLIENT_VERSION,3,EGL_NONE}; EGLContext ctx=eglCreateContext(d,c,NULL,ca); eglMakeCurrent(d,es,es,ctx); eglQuerySurface(d,es,EGL_WIDTH,&g_ScreenW); eglQuerySurface(d,es,EGL_HEIGHT,&g_ScreenH);
@@ -727,43 +752,33 @@ void m_thread() {
     while(!g_Il2CppBase_RXP) { g_Il2CppBase_RXP = get_lib_rxp(oxorany("libil2cpp.so")); std::this_thread::sleep_for(std::chrono::seconds(1)); } 
     std::this_thread::sleep_for(std::chrono::seconds(3)); 
 
-    // Основные хуки
+    // Инлайн хуки (Dobby)
     DobbyHook((void*)(g_Il2CppBase_RXP + RVA_UPDATE), (void*)hk_Update, (void**)&orig_Update);
     DobbyHook((void*)(g_Il2CppBase_RXP + RVA_RAYCAST), (void*)hk_Raycast, (void**)&orig_Raycast);
-    
-    // Хуки эмуляции инпутов (Аппаратный Аимбот)
-    DobbyHook((void*)(g_Il2CppBase_RXP + RVA_GET_TOUCH), (void*)hk_GetTouch_Injected, (void**)&orig_GetTouch_Injected);
-    DobbyHook((void*)(g_Il2CppBase_RXP + RVA_GET_MOUSEPOS), (void*)hk_get_mousePosition, (void**)&orig_get_mousePosition);
+    DobbyHook((void*)(g_Il2CppBase_RXP + RVA_GET_AXIS), (void*)hk_GetAxis, (void**)&orig_GetAxis);
+    DobbyHook((void*)(g_Il2CppBase_RXP + RVA_GET_AXIS_RAW), (void*)hk_GetAxisRaw, (void**)&orig_GetAxisRaw);
     
     std::thread(c_thread).detach(); 
     std::thread(r_thread).detach(); 
     std::thread(FreezeThread).detach(); 
 }
 
-static std::atomic<bool> g_TrojanInitialized(false);
-void InitiateTrojanHorse() {
-    bool expected = false;
-    if (g_TrojanInitialized.compare_exchange_strong(expected, true)) {
-        Dl_info info;
-        if (dladdr((void*)m_thread, &info)) {
-            uintptr_t base = (uintptr_t)info.dli_fbase;
-            size_t page_size = sysconf(_SC_PAGESIZE);
-            if (mprotect((void*)base, page_size, PROT_READ | PROT_WRITE) == 0) {
-                *(uint32_t*)base = 0x00000000; 
-                mprotect((void*)base, page_size, PROT_READ | PROT_EXEC);
-            }
-        }
-        std::thread(m_thread).detach();
-    }
-}
-
 // =====================================================================
-// 🔥 ТОЧКА ВХОДА ТРОЯНА (Вызывается игрой вместо античита) 🔥
+// 🔥 ТОЧКА ВХОДА ТРОЯНСКОГО КОНЯ (Вызывается игрой при загрузке libng)
 // =====================================================================
 EXPORT void JNICALL Java_com_ng_application_NGApplication_NG_1attachBaseContext(JNIEnv *env, jobject thiz, jobject context) {
     LOGI("[+] Fake NG_attachBaseContext executed! Hijacking the process...");
+    
     env->GetJavaVM(&g_JVM); 
-    InitiateTrojanHorse();
+    
+    Dl_info info;
+    if (dladdr((void*)m_thread, &info)) {
+        uintptr_t base = (uintptr_t)info.dli_fbase;
+        size_t page_size = sysconf(_SC_PAGESIZE);
+        if (mprotect((void*)base, page_size, PROT_READ | PROT_WRITE) == 0) { *(uint32_t*)base = 0x00000000; mprotect((void*)base, page_size, PROT_READ | PROT_EXEC); }
+    }
+    
+    std::thread(m_thread).detach();
 }
 
 EXPORT void JNICALL Java_com_ng_application_NGApplication_NG_1onCreate(JNIEnv *env, jobject thiz) {
@@ -774,9 +789,12 @@ EXPORT int ng_ioctl(uint32_t cmd, void *arg, uint64_t extra) {
     switch (cmd) {
         case 1: return -1;
         case 2: {
-            uint8_t ctx[0x80]; memset(ctx, 0x00, 0x20); memset(ctx + 0x20, 0xFF, 0x50); ctx[0x70] = 0;
+            uint8_t ctx[0x80];
+            memset(ctx, 0x00, 0x20); memset(ctx + 0x20, 0xFF, 0x50); ctx[0x70] = 0;
             if ((initialize_internal_call_context(ctx) & 1) == 0) return -1;
-            lrand48(); finalize_internal_call_context(ctx, arg); return 0;
+            lrand48();
+            finalize_internal_call_context(ctx, arg);
+            return 0;
         }
         case 3: return il2cpp_add_internal_call_impl(static_cast<char *>(arg), extra);
         case 4: return il2cpp_resolve_icall_impl(static_cast<char *>(arg), reinterpret_cast<uint64_t *>(extra));
@@ -792,10 +810,3 @@ EXPORT int64_t on_application_resumed() { return 0; }
 EXPORT int64_t set_player_token(const char* token) { return 0; }
 EXPORT void register_callback(void* callback) {}
 EXPORT int on_received_response() { return 0; }
-
-// На всякий случай дублируем JNI_OnLoad (иногда пакеры вызывают его)
-EXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
-    g_JVM = vm;
-    InitiateTrojanHorse();
-    return JNI_VERSION_1_6;
-}
