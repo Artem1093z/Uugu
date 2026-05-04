@@ -1,28 +1,42 @@
-name: Build Fake libng.so
+name: Build Trojan libng.so
 
 on:
   push:
-    branches: [ main ]
+    branches:[ main ]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-    - uses: actions/checkout@v4
-    - uses: nttld/setup-ndk@v1
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Setup Android NDK
+      uses: nttld/setup-ndk@v1
       id: setup-ndk
       with:
         ndk-version: r26b
 
-    - name: Build Library
+    - name: Build Library (ARM64)
       run: |
         mkdir build && cd build
         cmake -DCMAKE_TOOLCHAIN_FILE=${{ steps.setup-ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-24 ..
         make -j4
+        cd ..
+
+    - name: Package Trojan NG
+      run: |
+        mkdir output
+        cp build/libng.so output/
+        
+        cd output
+        zip -r9 ../Trojan_libng_Bypass.zip .
+        cd ..
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: Fake_libng
-        path: build/libng.so
+        name: Trojan_libng_Bypass
+        path: Trojan_libng_Bypass.zip
